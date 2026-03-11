@@ -7,6 +7,10 @@ from data import NEXRADDataset
 from torch.utils.data import DataLoader
 from torch.utils.data import random_split
 
+# Data visualization
+import matplotlib.pyplot as plt
+import os
+
 # Train/test utils
 import argparse
 import torch
@@ -16,7 +20,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args):
     model.train()
     total_loss = 0
 
-    for x, y in loader:
+    for i, (x, y) in enumerate(loader):
         x = x.to(device)
         y = y.to(device)
 
@@ -32,6 +36,11 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args):
         else:
             pred = model(x)  # adjust later for SmaAtUNet
 
+        # Inside the loop
+        if i == 0:
+            print(f"Input Range: {x.min().item():.4f} to {x.max().item():.4f}")
+            print(f"Pred Range: {pred.min().item():.4f} to {pred.max().item():.4f}")
+            print(f"Target Range: {y.min().item():.4f} to {y.max().item():.4f}")
         loss = criterion(pred, y)
         loss.backward()
         optimizer.step()
@@ -40,13 +49,13 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args):
 
     return total_loss / len(loader)
 
-def evaluate(model, loader, criterion, device, args):
+def evaluate(model, loader, criterion, device, args, epoch=0):
     """ Model evaluate loop (no training) """
     model.eval()
     total_loss = 0
 
     with torch.no_grad():
-        for x, y in loader:
+        for i, (x, y) in enumerate(loader):
             x = x.to(device)
             y = y.to(device)
 
@@ -57,10 +66,40 @@ def evaluate(model, loader, criterion, device, args):
 
             loss = criterion(pred, y)
             total_loss += loss.item()
+            if args.save_samples and i == 0:
+                save_comparison(x[0], y[0], pred[0], epoch, i, out_dir=args.sample_dir)
 
     return total_loss / len(loader)
 
-# save checkpoints, metrics, and sample predictions
+def save_comparison(input_frames, target_frames, pred_frames, epoch, batch_idx, out_dir="samples"):
+    """
+    Saves a PNG comparing the last input frame, ground truth sequence, and predicted sequence.
+        input_frames: [T_in, 1, H, W]
+        target_frames: [T_out, 1, H, W]
+        pred_frames: [T_out, 1, H, W]
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    t_out = target_frames.shape[0]
+    
+    # Create a figure: 2 rows (Target vs Pred), t_out columns
+    fig, axes = plt.subplots(2, t_out, figsize=(t_out * 3, 6))
+    
+    for t in range(t_out):
+        # Top row: Ground Truth
+        ax_gt = axes[0, t]
+        im_gt = ax_gt.imshow(target_frames[t, 0].cpu().numpy(), vmin=0, vmax=1, cmap='viridis')
+        ax_gt.set_title(f"Target T+{t+1}")
+        ax_gt.axis('off')
+        
+        # Bottom row: Prediction
+        ax_pred = axes[1, t]
+        im_pred = ax_pred.imshow(pred_frames[t, 0].detach().cpu().numpy(), vmin=0, vmax=1, cmap='viridis')
+        ax_pred.set_title(f"Pred T+{t+1}")
+        ax_pred.axis('off')
+
+    plt.tight_layout()
+    plt.savefig(f"{out_dir}/epoch{epoch}_batch{batch_idx}.png")
+    plt.close()
 
 
 def main():
@@ -85,23 +124,25 @@ def main():
 
     # Training hyperparameters
     ap.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
-    ap.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    ap.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     ap.add_argument("--weight-decay", type=float, default=0.0, help="Optimizer weight decay")
 
     # ConvLSTM architecture
-    ap.add_argument("--hidden-ch", type=int, default=64, help="Number of ConvLSTM hidden channels")
+    ap.add_argument("--hidden-ch", type=int, nargs="+", default=[64,64,64], help="Number of ConvLSTM hidden channels")
     ap.add_argument("--num-layers", type=int, default=2, help="Number of stacked ConvLSTM layers")
-    ap.add_argument("--teacher-forcing", type=float, default=0.5, help="Probability of using ground truth frame during training")
+    ap.add_argument("--teacher-forcing", type=float, default=0, help="Probability of using ground truth frame during training")
 
     # Visualization/outdirs/reproducibility
     ap.add_argument("--save-samples", action="store_true", help="Save prediction visualizations")
     ap.add_argument("--sample-dir", type=str, default="samples", help="Directory for saving prediction samples")
     ap.add_argument("--seed", type=int, default=13, help="Random seed")
 
+    print("Starting model...")
     args = ap.parse_args()
-
+    print("Arguments parsed!")
 
     # ---------------- 2. Data loading ----------------
+    print("Building dataset...")
     ds = NEXRADDataset(
         raw_root="data/raw",
         stations=args.stations,
@@ -115,11 +156,13 @@ def main():
     n_val = int(args.val_frac * n)
     n_test = int(args.test_frac * n)
     n_train = n - n_val - n_test
+    print("Train/val/test split complete!")
 
     torch.manual_seed(args.seed)
     train_ds, val_ds, test_ds = random_split(ds, [n_train, n_val, n_test])
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
+    train_loader = [next(iter(train_loader))]
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size)
 
@@ -129,10 +172,11 @@ def main():
         model = SmaAtUNet()
     else:
         model = ConvLSTMForecaster(hidden_ch=args.hidden_ch, num_layers=args.num_layers)
+    print("Model built!")
     
 
     # ------------ 4. Train selected model ------------
-    device = "cpu"
+    device = torch.device("mps")
 
     model = model.to(device)
     optimizer = torch.optim.Adam(
@@ -141,19 +185,27 @@ def main():
         weight_decay=args.weight_decay
     )
 
-    criterion = torch.nn.MSELoss()
+    criterion = torch.nn.L1Loss()
 
+    print("Beginning training...")
     for epoch in range(args.epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, args)
-        val_loss = evaluate(model, val_loader, criterion, device, args)
+        val_loss = evaluate(model, val_loader, criterion, device, args, epoch)
         print(f"Epoch {epoch + 1}/{args.epochs} | train: {train_loss:.3f} | val: {val_loss:.3f}")
 
-    # ------------ 4. Evaluate model ------------
+    # ------------ 5. Evaluate model ------------
+    print("Evaluating model...")
     test_loss = evaluate(model, test_loader, criterion, device, args)
     print(f"Final loss on test set: {test_loss:.3f}")
+    print("Done!")
 
 if __name__ == "__main__":
     main()
+
+
+
+#TODO -> save predictions
+#TODO -> figure out why training isnt doing anything
 
 """
     python clearsky_lstm.py \
