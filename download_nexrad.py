@@ -28,7 +28,7 @@ from datetime import date, timedelta
 
 import boto3
 import botocore
-from botocore.s3.transfer import TransferConfig
+from boto3.s3.transfer import TransferConfig
 
 BUCKET = "unidata-nexrad-level2"
 REGION = "us-east-1"
