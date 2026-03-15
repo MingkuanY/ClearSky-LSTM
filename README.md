@@ -27,10 +27,13 @@ Files land at `data/raw/YYYY/MM/DD/<STATION>/<filename>`.
 python download_nexrad.py \
     --stations KAMX \
     --start 2022-07-01 --end 2022-07-15 \
+    --workers 8 \
     --out data/raw
 ```
 
 Already-downloaded files are skipped automatically.
+Use a larger `--workers` value if your network and disk can keep up; the downloader
+now fetches files concurrently instead of one-by-one.
 
 ### 2 — Cache (run once, before training)
 
