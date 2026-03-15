@@ -15,6 +15,14 @@ import os
 import argparse
 import torch
 
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+elif torch.backends.mps.is_available():
+    device = torch.device('mps')
+else:
+    device = torch.device('cpu')
+
+
 def train_one_epoch(model, loader, optimizer, criterion, device, args):
     """ Training loop for one epoch """
     model.train()
@@ -56,6 +64,7 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
 
     with torch.no_grad():
         for i, (x, y) in enumerate(loader):
+            print(x)
             x = x.to(device)
             y = y.to(device)
 
@@ -176,8 +185,6 @@ def main():
     
 
     # ------------ 4. Train selected model ------------
-    device = torch.device("mps")
-
     model = model.to(device)
     optimizer = torch.optim.Adam(
         model.parameters(),
