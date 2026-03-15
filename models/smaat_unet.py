@@ -119,17 +119,15 @@ class SmaAtUNetDecoder(nn.Module):
         self.conv = DoubleConv(in_channels + skip_channels, out_channels)
         
     def forward(self, x, skip):
-        # input shape must be divisible by 2^4
-        assert x.shape[-2:] == skip.shape[-2:], (x.shape, skip.shape)
-        
-        # https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.interpolate.html
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        assert x.shape[-2:] == skip.shape[-2:], (x.shape, skip.shape)
         x = torch.cat([skip, x], dim=1)
         return self.conv(x)
         
 class SmaAtUNet(nn.Module):
     def __init__(self, in_channels=12, out_channels=1, base=64):
         super().__init__()
+        self.out_channels = out_channels
         
         self.enc1 = SmaAtUNetEncoder(in_channels, base)
         self.enc2 = SmaAtUNetEncoder(base, base * 2)
@@ -147,6 +145,18 @@ class SmaAtUNet(nn.Module):
         self.out = nn.Conv2d(base, out_channels, kernel_size=1)
         
     def forward(self, x):
+        restore_sequence = False
+        if x.ndim == 5:
+            b, t, c, h, w = x.shape
+            if c != 1:
+                raise ValueError(
+                    f"SmaAtUNet expects single-channel frames when given 5D input, got C={c}"
+                )
+            x = x.reshape(b, t * c, h, w)
+            restore_sequence = True
+        elif x.ndim != 4:
+            raise ValueError(f"SmaAtUNet expects 4D or 5D input, got shape {tuple(x.shape)}")
+
         x, skip1 = self.enc1(x)
         x, skip2 = self.enc2(x)
         x, skip3 = self.enc3(x)
@@ -159,5 +169,8 @@ class SmaAtUNet(nn.Module):
         x = self.dec3(x, skip3)
         x = self.dec2(x, skip2)
         x = self.dec1(x, skip1)
-        
-        return self.out(x)
+
+        x = self.out(x)
+        if restore_sequence:
+            x = x.unsqueeze(2)
+        return x
