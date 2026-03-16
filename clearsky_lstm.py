@@ -15,6 +15,14 @@ import os
 import argparse
 import torch
 
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+elif torch.backends.mps.is_available():
+    device = torch.device('mps')
+else:
+    device = torch.device('cpu')
+
+
 def train_one_epoch(model, loader, optimizer, criterion, device, args):
     """ Training loop for one epoch """
     model.train()
@@ -34,7 +42,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args):
                 y=y
             )
         else:
-            pred = model(x)  # adjust later for SmaAtUNet
+            pred = model(x)
 
         # Inside the loop
         if i == 0:
@@ -62,7 +70,7 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
             if args.model == "base_network":
                 pred = model(x, t_out=y.shape[1])
             else:
-                pred = model(x)  # adjust later for SmaAtUNet output shape
+                pred = model(x)
 
             loss = criterion(pred, y)
             total_loss += loss.item()
@@ -161,23 +169,33 @@ def main():
     torch.manual_seed(args.seed)
     train_ds, val_ds, test_ds = random_split(ds, [n_train, n_val, n_test])
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
-    train_loader = [next(iter(train_loader))]
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
 
 
     # ------------ 3. Build selected model ------------
     if args.model == "smaat_unet":
-        model = SmaAtUNet()
+        model = SmaAtUNet(in_channels=args.t_in, out_channels=args.t_out)
     else:
         model = ConvLSTMForecaster(hidden_ch=args.hidden_ch, num_layers=args.num_layers)
     print("Model built!")
     
 
     # ------------ 4. Train selected model ------------
-    device = torch.device("mps")
-
     model = model.to(device)
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -216,7 +234,7 @@ if __name__ == "__main__":
     --batch-size 8 \
     --epochs 20 \
     --lr 0.001 \
-    --hidden-ch 64 \
+    --hidden-ch 64 64\
     --num-layers 2 \
     --teacher-forcing 0.5
 """
