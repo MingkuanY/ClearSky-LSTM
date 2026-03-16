@@ -186,6 +186,9 @@ def main():
         num_workers=args.num_workers,
     )
 
+    # Only use this below commented line if testing on the first batch only
+    # train_loader = [next(iter(train_loader))]
+
 
     # ------------ 3. Build selected model ------------
     if args.model == "smaat_unet":
@@ -219,11 +222,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-#TODO -> save predictions
-#TODO -> figure out why training isnt doing anything
 
 """
     python clearsky_lstm.py \
