@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 from data import DBZ_MAX, DBZ_MIN
 
@@ -119,5 +120,78 @@ class ReflectivityBalancedLoss(torch.nn.Module):
 class PerceptualLoss:
     pass
 
+# https://ieeexplore.ieee.org/abstract/document/1284395
+class SSIMLoss(torch.nn.Module):
+    """
+    SSIM loss implementation following:
+    Wang et al., "Image Quality Assessment: From Error Visibility to Structural Similarity", IEEE TIP 2004.
+    """
 
+    def __init__(
+        self,
+        window_size: int = 11,
+        sigma: float = 1.5,
+        data_range: float = 1.0,
+        k1: float = 0.01,
+        k2: float = 0.03,
+    ):
+        super().__init__()
 
+        if window_size % 2 == 0:
+            raise ValueError("window_size must be odd")
+
+        self.window_size = window_size
+        self.sigma = sigma
+        self.data_range = data_range
+        self.k1 = k1
+        self.k2 = k2
+
+        self.register_buffer("window", self._create_gaussian_window())
+
+    def _create_gaussian_window(self):
+        coords = torch.arange(self.window_size).float() - self.window_size // 2
+        g = torch.exp(-(coords ** 2) / (2 * self.sigma ** 2))
+        g = g / g.sum()
+
+        window_2d = torch.outer(g, g)
+        window_2d = window_2d / window_2d.sum()
+
+        return window_2d.view(1, 1, self.window_size, self.window_size)
+
+    def forward(self, x, y):
+
+        if x.shape != y.shape:
+            raise ValueError("Input images must have the same dimensions")
+
+        b, c, h, w = x.shape
+
+        window = self.window.expand(c, 1, self.window_size, self.window_size)
+
+        padding = self.window_size // 2
+
+        mu_x = F.conv2d(x, window, padding=padding, groups=c)
+        mu_y = F.conv2d(y, window, padding=padding, groups=c)
+
+        mu_x_sq = mu_x ** 2
+        mu_y_sq = mu_y ** 2
+        mu_xy = mu_x * mu_y
+
+        sigma_x_sq = F.conv2d(x * x, window, padding=padding, groups=c) - mu_x_sq
+        sigma_y_sq = F.conv2d(y * y, window, padding=padding, groups=c) - mu_y_sq
+        sigma_xy = F.conv2d(x * y, window, padding=padding, groups=c) - mu_xy
+
+        C1 = (self.k1 * self.data_range) ** 2
+        C2 = (self.k2 * self.data_range) ** 2
+
+        ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / (
+            (mu_x_sq + mu_y_sq + C1) * (sigma_x_sq + sigma_y_sq + C2)
+        )
+
+        ssim = ssim_map.mean()
+
+        return 1 - ssim
+
+# https://github.com/jorge-pessoa/pytorch-msssim/blob/master/pytorch_msssim/__init__.py
+# https://ieeexplore.ieee.org/abstract/document/1292216
+class MSSSIMLoss:
+    pass
