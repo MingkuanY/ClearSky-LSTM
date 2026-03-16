@@ -143,6 +143,7 @@ def main():
     # Visualization/outdirs/reproducibility
     ap.add_argument("--save-samples", action="store_true", help="Save prediction visualizations")
     ap.add_argument("--sample-dir", type=str, default="samples", help="Directory for saving prediction samples")
+    ap.add_argument("--model-out", type=str, default="checkpoints/final_model.pt", help="Path to save final model parameters")
     ap.add_argument("--seed", type=int, default=13, help="Random seed")
 
     print("Starting model...")
@@ -218,6 +219,13 @@ def main():
     print("Evaluating model...")
     test_loss = evaluate(model, test_loader, criterion, device, args)
     print(f"Final loss on test set: {test_loss:.3f}")
+
+    model_dir = os.path.dirname(args.model_out)
+    if model_dir:
+        os.makedirs(model_dir, exist_ok=True)
+    torch.save(model.state_dict(), args.model_out)
+    print(f"Saved final model parameters to {args.model_out}")
+
     print("Done!")
 
 if __name__ == "__main__":
@@ -234,7 +242,9 @@ if __name__ == "__main__":
     --lr 0.001 \
     --hidden-ch 64 64\
     --num-layers 2 \
-    --teacher-forcing 0.5
+    --teacher-forcing 0.5 \
+    --save-samples \
+    --model-out
     
     python clearsky_lstm.py \
     --model smaat_unet \
@@ -243,5 +253,7 @@ if __name__ == "__main__":
     --t-out 6 \
     --batch-size 8 \
     --epochs 20 \
-    --lr 0.001
+    --lr 0.001 \
+    --save-samples \
+    --model-out
 """
