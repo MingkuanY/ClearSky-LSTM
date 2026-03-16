@@ -235,4 +235,13 @@ if __name__ == "__main__":
     --hidden-ch 64 64\
     --num-layers 2 \
     --teacher-forcing 0.5
+    
+    python clearsky_lstm.py \
+    --model smaat_unet \
+    --stations KAMX \
+    --t-in 6 \
+    --t-out 6 \
+    --batch-size 8 \
+    --epochs 20 \
+    --lr 0.001
 """
