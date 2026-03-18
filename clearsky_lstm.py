@@ -9,7 +9,11 @@ from torch.utils.data import random_split
 
 # Data visualization
 import matplotlib.pyplot as plt
+import numpy as np
 import os
+
+# Blur metric
+import cv2
 
 # Train/test utils
 import argparse
@@ -44,7 +48,8 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args):
         else:
             pred = model(x)
 
-        # Inside the loop
+        # These print statements are for testing purposes only
+        # They print range of predicted values vs range of ground truth values
         if i == 0:
             print(f"Input Range: {x.min().item():.4f} to {x.max().item():.4f}")
             print(f"Pred Range: {pred.min().item():.4f} to {pred.max().item():.4f}")
@@ -55,12 +60,14 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args):
 
         total_loss += loss.item()
 
+
     return total_loss / len(loader)
 
 def evaluate(model, loader, criterion, device, args, epoch=0):
     """ Model evaluate loop (no training) """
     model.eval()
     total_loss = 0
+    total_blur = 0
 
     with torch.no_grad():
         for i, (x, y) in enumerate(loader):
@@ -73,11 +80,33 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
                 pred = model(x)
 
             loss = criterion(pred, y)
+
             total_loss += loss.item()
             if args.save_samples and i == 0:
                 save_comparison(x[0], y[0], pred[0], epoch, i, out_dir=args.sample_dir)
+                save_preds_only(pred[0], epoch, i, out_dir=os.path.join(args.sample_dir, "preds"))
+                total_blur += compute_blur_score(pred[0])
+            
+    avg_blur = total_blur / len(loader)
+    avg_loss = total_loss / len(loader)
+    return avg_loss, avg_blur
 
-    return total_loss / len(loader)
+def compute_blur_score(preds):
+    """
+    Computes Laplacian Variance for a sequence of predictions.
+    preds: [T, 1, H, W] in range [0, 1]
+    """
+    # Convert to 8-bit numpy for OpenCV
+    # Move to CPU, detach from graph, and scale
+    seq = (preds.detach().cpu().numpy() * 255).astype('uint8')
+    
+    scores = []
+    for t in range(seq.shape[0]):
+        frame = seq[t, 0] # [H, W]
+        score = cv2.Laplacian(frame, cv2.CV_64F).var()
+        scores.append(score)
+    
+    return sum(scores) / len(scores)
 
 def save_comparison(input_frames, target_frames, pred_frames, epoch, batch_idx, out_dir="samples"):
     """
@@ -109,6 +138,30 @@ def save_comparison(input_frames, target_frames, pred_frames, epoch, batch_idx, 
     plt.savefig(f"{out_dir}/epoch{epoch}_batch{batch_idx}.png")
     plt.close()
 
+def save_preds_only(pred_frames, epoch, batch_idx, out_dir="samples/preds"):
+    """
+    Saves only the predicted frames as raw images to avoid 
+    inflated blur scores from Matplotlib text and borders.
+    pred_frames: [T_out, 1, H, W] tensor
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    t_out = pred_frames.shape[0]
+    
+    # Use [0] to get the first sequence if batch_size > 1
+    preds = pred_frames.detach().cpu().numpy() # [T, 1, H, W]
+
+    for t in range(t_out):
+        # 1. Normalize and scale to 8-bit
+        frame = preds[t, 0]
+        frame = np.clip(frame, 0, 1) # Safety clip
+        frame_8bit = (frame * 255).astype(np.uint8)
+
+        # 2. Apply Viridis colormap 
+        color_frame = cv2.applyColorMap(frame_8bit, cv2.COLORMAP_VIRIDIS)
+
+        # 3. Save each frame
+        filename = f"epoch{epoch}_b{batch_idx}_T{t+1}.png"
+        cv2.imwrite(os.path.join(out_dir, filename), color_frame)
 
 def main():
     # ---------------- 1. Parse Args ----------------
@@ -190,7 +243,6 @@ def main():
     # Only use this below commented line if testing on the first batch only
     # train_loader = [next(iter(train_loader))]
 
-
     # ------------ 3. Build selected model ------------
     if args.model == "smaat_unet":
         model = SmaAtUNet(in_channels=args.t_in, out_channels=args.t_out)
@@ -210,10 +262,11 @@ def main():
     criterion = torch.nn.L1Loss()
 
     print("Beginning training...")
+    print("Note: higher blur score = sharper image!")
     for epoch in range(args.epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, args)
-        val_loss = evaluate(model, val_loader, criterion, device, args, epoch)
-        print(f"Epoch {epoch + 1}/{args.epochs} | train: {train_loss:.3f} | val: {val_loss:.3f}")
+        val_loss, avg_blur = evaluate(model, val_loader, criterion, device, args, epoch)
+        print(f"Epoch {epoch + 1}/{args.epochs} | train: {train_loss:.3f} | val: {val_loss:.3f} | blur: {avg_blur:.3f}")
 
     # ------------ 5. Evaluate model ------------
     print("Evaluating model...")
@@ -232,6 +285,8 @@ if __name__ == "__main__":
     main()
 
 """
+    Sample commands for running the script:
+
     python clearsky_lstm.py \
     --model base_network \
     --stations KAMX \

@@ -13,3 +13,4 @@ typing_extensions==4.15.0
 boto3
 arm-pyart
 matplotlib
+opencv-python-headless
