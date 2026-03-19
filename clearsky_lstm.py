@@ -270,8 +270,8 @@ def main():
 
     # ------------ 5. Evaluate model ------------
     print("Evaluating model...")
-    test_loss = evaluate(model, test_loader, criterion, device, args)
-    print(f"Final loss on test set: {test_loss:.3f}")
+    test_loss, test_blur = evaluate(model, test_loader, criterion, device, args)
+    print(f"Final loss on test set: {test_loss:.3f} // final blur on test set: {test_blur:.3f}")
 
     model_dir = os.path.dirname(args.model_out)
     if model_dir:
