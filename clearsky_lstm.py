@@ -347,10 +347,6 @@ def main():
 
     # ------------ 4. Train selected model ------------
     model = model.to(device)
-    if args.model == "base_network":
-        sample_x, _ = next(iter(train_loader))
-        model.initialize_for_input(sample_x.to(device))
-
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=args.lr,
