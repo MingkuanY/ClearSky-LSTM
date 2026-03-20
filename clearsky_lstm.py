@@ -9,9 +9,13 @@ from torch.utils.data import random_split
 
 # Data visualization
 from collections import defaultdict
+import datetime
+import json
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import random
+import string
 
 # Blur metric
 import cv2
@@ -107,10 +111,11 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
             total_loss += loss.item()
             n_batches += 1
 
-            if args.save_samples and i == 0:
+            if i == 0:
                 save_comparison(x[0], y[0], pred[0], epoch, i, out_dir=args.sample_dir)
                 save_preds_only(pred[0], epoch, i, out_dir=os.path.join(args.sample_dir, "preds"))
-                total_blur += compute_blur_score(pred[0])
+
+            total_blur += compute_blur_score(pred[0])
 
             r_metrics = regression_metrics(pred, y)
             stats["mae"] += r_metrics["mae"]
@@ -270,14 +275,24 @@ def main():
     ap.add_argument("--teacher-forcing", type=float, default=0, help="Probability of using ground truth frame during training")
 
     # Visualization/outdirs/reproducibility
-    ap.add_argument("--save-samples", action="store_true", help="Save prediction visualizations")
-    ap.add_argument("--sample-dir", type=str, default="samples", help="Directory for saving prediction samples")
     ap.add_argument("--model-out", type=str, default="checkpoints/final_model.pt", help="Path to save final model parameters")
     ap.add_argument("--seed", type=int, default=13, help="Random seed")
 
     print("Starting model...")
     args = ap.parse_args()
-    print("Arguments parsed!")
+
+    # Enforce mandatory output folder for metrics and samples
+    stamp = datetime.datetime.now().strftime("%Y%m%d")
+    random_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    subpath = os.path.join(stamp, args.model, random_id)
+
+    args.sample_dir = os.path.join("samples", subpath)
+    args.results_dir = os.path.join("results", subpath)
+
+    os.makedirs(args.sample_dir, exist_ok=True)
+    os.makedirs(args.results_dir, exist_ok=True)
+
+    print(f"Arguments parsed! sample_dir={args.sample_dir} results_dir={args.results_dir}")
 
     # ---------------- 2. Data loading ----------------
     print("Building dataset...")
@@ -339,9 +354,27 @@ def main():
 
     print("Beginning training...")
     print("Note: higher blur score = sharper image!")
+    history = []
     for epoch in range(args.epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, args)
         val_stats = evaluate(model, val_loader, criterion, device, args, epoch)
+
+        epoch_results = {
+            "epoch": epoch + 1,
+            "train_loss": float(train_loss),
+            "loss": float(val_stats["loss"]),
+            "blur": float(val_stats["blur"]),
+            "mae": float(val_stats["mae"]),
+            "mse": float(val_stats["mse"]),
+            "rmse": float(val_stats["rmse"]),
+            "rapsd_dist": float(val_stats["rapsd_dist"]),
+            "per_lead": val_stats["per_lead"],
+        }
+
+        history.append(epoch_results)
+        with open(os.path.join(args.results_dir, "train_val_metrics.json"), "w") as f:
+            json.dump(history, f, indent=2)
+
         print(
             f"Epoch {epoch + 1}/{args.epochs} | train: {train_loss:.3f} "
             f"| val: {val_stats['loss']:.3f} | blur: {val_stats['blur']:.3f} "
@@ -351,6 +384,10 @@ def main():
     # ------------ 5. Evaluate model ------------
     print("Evaluating model...")
     test_stats = evaluate(model, test_loader, criterion, device, args)
+
+    with open(os.path.join(args.results_dir, "test_metrics.json"), "w") as f:
+        json.dump({"test": test_stats}, f, indent=2)
+
     print(
         f"Final loss on test set: {test_stats['loss']:.3f} "
         f"// final blur on test set: {test_stats['blur']:.3f} "
