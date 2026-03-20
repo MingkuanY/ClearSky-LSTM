@@ -424,7 +424,7 @@ if __name__ == "__main__":
     --num-layers 2 \
     --teacher-forcing 0.5 \
     --save-samples \
-    --model-out
+    --model-out "checkpoints/baseline_final.pt"
     
     python clearsky_lstm.py \
     --model smaat_unet \
@@ -435,5 +435,5 @@ if __name__ == "__main__":
     --epochs 20 \
     --lr 0.001 \
     --save-samples \
-    --model-out
+    --model-out "checkpoints/smaat_unet_final.pt"
 """
