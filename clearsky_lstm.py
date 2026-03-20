@@ -8,12 +8,21 @@ from torch.utils.data import DataLoader
 from torch.utils.data import random_split
 
 # Data visualization
+from collections import defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 
 # Blur metric
 import cv2
+
+# Metrics
+from metrics import (
+    regression_metrics,
+    contingency_metrics,
+    fractions_skill_score,
+    rapsd_distance,
+)
 
 # Train/test utils
 import argparse
@@ -66,8 +75,22 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args):
 def evaluate(model, loader, criterion, device, args, epoch=0):
     """ Model evaluate loop (no training) """
     model.eval()
-    total_loss = 0
-    total_blur = 0
+    total_loss = 0.0
+    total_blur = 0.0
+    n_batches = 0
+
+    # accumulators
+    stats = {
+        "mae": 0.0,
+        "mse": 0.0,
+        "rmse": 0.0,
+        "RAPSD_dist": 0.0,
+    }
+    per_lead = defaultdict(lambda: None)
+
+    threshold_keys = ["CSI_20", "POD_20", "FAR_20", "CSI_40", "POD_40", "FAR_40", "CSI_50", "POD_50", "FAR_50"]
+
+    fss_keys = []
 
     with torch.no_grad():
         for i, (x, y) in enumerate(loader):
@@ -82,14 +105,67 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
             loss = criterion(pred, y)
 
             total_loss += loss.item()
+            n_batches += 1
+
             if args.save_samples and i == 0:
                 save_comparison(x[0], y[0], pred[0], epoch, i, out_dir=args.sample_dir)
                 save_preds_only(pred[0], epoch, i, out_dir=os.path.join(args.sample_dir, "preds"))
                 total_blur += compute_blur_score(pred[0])
-            
-    avg_blur = total_blur / len(loader)
-    avg_loss = total_loss / len(loader)
-    return avg_loss, avg_blur
+
+            r_metrics = regression_metrics(pred, y)
+            stats["mae"] += r_metrics["mae"]
+            stats["mse"] += r_metrics["mse"]
+            stats["rmse"] += r_metrics["rmse"]
+
+            for k in ["mae_lead", "mse_lead", "rmse_lead"]:
+                if per_lead[k] is None:
+                    per_lead[k] = r_metrics[k].clone()
+                else:
+                    per_lead[k] += r_metrics[k]
+
+            cont_metrics = contingency_metrics(pred, y)
+            for key in threshold_keys:
+                if per_lead[key] is None:
+                    per_lead[key] = cont_metrics[key].clone()
+                else:
+                    per_lead[key] += cont_metrics[key]
+
+            fss_metrics = fractions_skill_score(pred, y)
+            for key, value in fss_metrics.items():
+                if key not in fss_keys:
+                    fss_keys.append(key)
+                if per_lead[key] is None:
+                    per_lead[key] = value.clone()
+                else:
+                    per_lead[key] += value
+
+            rapsd = rapsd_distance(pred, y)
+            stats["RAPSD_dist"] += rapsd["RAPSD_dist"]
+            if per_lead.get("RAPSD_dist_lead") is None:
+                per_lead["RAPSD_dist_lead"] = rapsd["RAPSD_dist_lead"].clone()
+            else:
+                per_lead["RAPSD_dist_lead"] += rapsd["RAPSD_dist_lead"]
+
+    avg_loss = total_loss / max(n_batches, 1)
+    avg_blur = total_blur / max(n_batches, 1)
+
+    for m in ["mae", "mse", "rmse", "RAPSD_dist"]:
+        stats[m] = stats[m] / max(n_batches, 1)
+
+    for k, v in per_lead.items():
+        per_lead[k] = (v / max(n_batches, 1)).tolist() if isinstance(v, torch.Tensor) else v
+
+    eval_stats = {
+        "loss": avg_loss,
+        "blur": avg_blur,
+        "mae": stats["mae"],
+        "mse": stats["mse"],
+        "rmse": stats["rmse"],
+        "rapsd_dist": stats["RAPSD_dist"],
+        "per_lead": per_lead,
+    }
+
+    return eval_stats
 
 def compute_blur_score(preds):
     """
@@ -265,13 +341,22 @@ def main():
     print("Note: higher blur score = sharper image!")
     for epoch in range(args.epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, args)
-        val_loss, avg_blur = evaluate(model, val_loader, criterion, device, args, epoch)
-        print(f"Epoch {epoch + 1}/{args.epochs} | train: {train_loss:.3f} | val: {val_loss:.3f} | blur: {avg_blur:.3f}")
+        val_stats = evaluate(model, val_loader, criterion, device, args, epoch)
+        print(
+            f"Epoch {epoch + 1}/{args.epochs} | train: {train_loss:.3f} "
+            f"| val: {val_stats['loss']:.3f} | blur: {val_stats['blur']:.3f} "
+            f"| MAE: {val_stats['mae']:.3f} | RMSE: {val_stats['rmse']:.3f} | RAPSD-dist: {val_stats['rapsd_dist']:.3f}"
+        )
 
     # ------------ 5. Evaluate model ------------
     print("Evaluating model...")
-    test_loss, test_blur = evaluate(model, test_loader, criterion, device, args)
-    print(f"Final loss on test set: {test_loss:.3f} // final blur on test set: {test_blur:.3f}")
+    test_stats = evaluate(model, test_loader, criterion, device, args)
+    print(
+        f"Final loss on test set: {test_stats['loss']:.3f} "
+        f"// final blur on test set: {test_stats['blur']:.3f} "
+        f"// MAE: {test_stats['mae']:.3f} // RMSE: {test_stats['rmse']:.3f} "
+        f"// RAPSD-dist: {test_stats['rapsd_dist']:.3f}"
+    )
 
     model_dir = os.path.dirname(args.model_out)
     if model_dir:
