@@ -39,6 +39,12 @@ def _reduce_per_lead(error_map: torch.Tensor, mask: torch.Tensor) -> torch.Tenso
     return (masked.sum(dim=(0, 2, 3)) / valid_count)
 
 
+def _reduce_global(error_map: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    masked = error_map * mask
+    valid_count = mask.sum().clamp(min=1)
+    return masked.sum() / valid_count
+
+
 def regression_metrics(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor | None = None):
     pred_dbz = _ensure_dbz(pred)
     target_dbz = _ensure_dbz(target)
@@ -55,14 +61,17 @@ def regression_metrics(pred: torch.Tensor, target: torch.Tensor, mask: torch.Ten
     mae_lead = _reduce_per_lead(abs_error, valid)
     mse_lead = _reduce_per_lead(sq_error, valid)
     rmse_lead = torch.sqrt(mse_lead + EPS)
+    mae = _reduce_global(abs_error, valid)
+    mse = _reduce_global(sq_error, valid)
+    rmse = torch.sqrt(mse + EPS)
 
     return {
         "mae_lead": mae_lead,
         "mse_lead": mse_lead,
         "rmse_lead": rmse_lead,
-        "mae": mae_lead.mean().item(),
-        "mse": mse_lead.mean().item(),
-        "rmse": rmse_lead.mean().item(),
+        "mae": mae.item(),
+        "mse": mse.item(),
+        "rmse": rmse.item(),
     }
 
 
@@ -122,15 +131,24 @@ def fractions_skill_score(pred: torch.Tensor, target: torch.Tensor, thresholds=(
             # reshape to merge batch+lead
             p_reshaped = pbin.reshape(batch * lead, 1, h, w)
             t_reshaped = tbin.reshape(batch * lead, 1, h, w)
+            valid_reshaped = valid.reshape(batch * lead, 1, h, w)
 
-            p_f = F.conv2d(p_reshaped, kernel, padding=pad) / (window * window)
-            t_f = F.conv2d(t_reshaped, kernel, padding=pad) / (window * window)
+            raw_valid_count = F.conv2d(valid_reshaped, kernel, padding=pad)
+            valid_count = raw_valid_count.clamp(min=1.0)
+
+            p_f = F.conv2d(p_reshaped, kernel, padding=pad) / valid_count
+            t_f = F.conv2d(t_reshaped, kernel, padding=pad) / valid_count
 
             p_f = p_f.reshape(batch, lead, h, w)
             t_f = t_f.reshape(batch, lead, h, w)
+            neighborhood_valid = (raw_valid_count > 0).reshape(batch, lead, h, w).to(pred_dbz.dtype)
 
-            mse_f = ((p_f - t_f) ** 2).mean(dim=(0, 2, 3))
-            mse_ref = (p_f ** 2 + t_f ** 2).mean(dim=(0, 2, 3))
+            diff_sq = (p_f - t_f) ** 2
+            ref_term = p_f ** 2 + t_f ** 2
+
+            neighborhood_count = neighborhood_valid.sum(dim=(0, 2, 3)).clamp(min=1.0)
+            mse_f = (diff_sq * neighborhood_valid).sum(dim=(0, 2, 3)) / neighborhood_count
+            mse_ref = (ref_term * neighborhood_valid).sum(dim=(0, 2, 3)) / neighborhood_count
             fss = 1.0 - mse_f / (mse_ref + EPS)
 
             metrics[f"FSS_thr{int(thr)}_w{window}"] = fss
@@ -139,15 +157,14 @@ def fractions_skill_score(pred: torch.Tensor, target: torch.Tensor, thresholds=(
 
 
 def rapsd_field(field: torch.Tensor, d: float = 1.0, return_freq=True):
-    # field: (H, W), real-valued
+    # field: (H, W), real-valued reflectivity field
     if field.ndim != 2:
         raise ValueError("rapsd_field requires 2D input")
 
     field = field.detach().cpu().float()
-    field = field - field.mean()
 
     fft = torch.fft.fft2(field)
-    psd2d = (fft.abs() ** 2)
+    psd2d = (fft.abs() ** 2) / field.numel()
     psd2d = torch.fft.fftshift(psd2d)
 
     h, w = field.shape
@@ -175,11 +192,30 @@ def rapsd_field(field: torch.Tensor, d: float = 1.0, return_freq=True):
     return bin_psd
 
 
-def rapsd_distance(pred: torch.Tensor, target: torch.Tensor, d: float = 1.0):
+def _masked_field(field: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    valid = mask.to(field.dtype)
+    return field * valid
+
+
+def rapsd_distance(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    d: float = 1.0,
+    mask: torch.Tensor | None = None,
+):
+    """
+    Reflectivity-space PSD discrepancy metric for nowcasting.
+
+    Compare radially averaged 2D power spectral densities on reflectivity fields.
+    The returned scalar is the RMSE between log10 PSD curves (excluding the
+    zero-frequency/DC bin), averaged over samples and reported per lead time and
+    overall.
+    """
     pred_dbz = _ensure_dbz(pred)
     target_dbz = _ensure_dbz(target)
     pred_dbz = _as_bt_hw(pred_dbz)
     target_dbz = _as_bt_hw(target_dbz)
+    valid = _valid_mask(target_dbz, mask=mask)
 
     batch, lead, h, w = pred_dbz.shape
     dist_per_lead = []
@@ -187,10 +223,17 @@ def rapsd_distance(pred: torch.Tensor, target: torch.Tensor, d: float = 1.0):
     for t in range(lead):
         diffs = []
         for b in range(batch):
-            _, p_psd = rapsd_field(pred_dbz[b, t], d=d, return_freq=True)
-            _, t_psd = rapsd_field(target_dbz[b, t], d=d, return_freq=True)
+            field_mask = valid[b, t]
+            _, p_psd = rapsd_field(_masked_field(pred_dbz[b, t], field_mask), d=d, return_freq=True)
+            _, t_psd = rapsd_field(_masked_field(target_dbz[b, t], field_mask), d=d, return_freq=True)
             n = min(len(p_psd), len(t_psd))
-            diffs.append(torch.sqrt(((p_psd[:n] - t_psd[:n]) ** 2).mean()).item())
+            if n <= 1:
+                diffs.append(0.0)
+                continue
+
+            p_curve = torch.log10(p_psd[1:n] + EPS)
+            t_curve = torch.log10(t_psd[1:n] + EPS)
+            diffs.append(torch.sqrt(((p_curve - t_curve) ** 2).mean()).item())
         dist_per_lead.append(float(torch.tensor(diffs).mean()))
 
     return {"RAPSD_dist_lead": torch.tensor(dist_per_lead), "RAPSD_dist": float(torch.tensor(dist_per_lead).mean())}
