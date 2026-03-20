@@ -1,10 +1,7 @@
-import math
-from collections import defaultdict
-
 import torch
 import torch.nn.functional as F
 
-from data import DBZ_MAX, DBZ_MIN
+from data import DBZ_MIN
 from loss_functions import denormalize_dbz
 
 EPS = 1e-8
@@ -156,45 +153,47 @@ def fractions_skill_score(pred: torch.Tensor, target: torch.Tensor, thresholds=(
     return metrics
 
 
+def _masked_field(field: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    valid = mask.to(field.dtype)
+    return field * valid
+
+
+_RAPSD_CACHE: dict[tuple[int, int, torch.device], tuple[torch.Tensor, torch.Tensor]] = {}
+
+
+def _get_rapsd_bins(h: int, w: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    key = (h, w, device)
+    cached = _RAPSD_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    y = torch.arange(h, device=device, dtype=torch.float32) - (h // 2)
+    x = torch.arange(w, device=device, dtype=torch.float32) - (w // 2)
+    x_grid, y_grid = torch.meshgrid(x, y, indexing="xy")
+    radius_bins = torch.sqrt(x_grid ** 2 + y_grid ** 2).reshape(-1).long()
+    counts = torch.bincount(radius_bins)
+    _RAPSD_CACHE[key] = (radius_bins, counts)
+    return radius_bins, counts
+
+
 def rapsd_field(field: torch.Tensor, d: float = 1.0, return_freq=True):
     # field: (H, W), real-valued reflectivity field
     if field.ndim != 2:
         raise ValueError("rapsd_field requires 2D input")
 
-    field = field.detach().cpu().float()
+    field = field.float()
+    h, w = field.shape
+    radius_bins, counts = _get_rapsd_bins(h, w, field.device)
 
     fft = torch.fft.fft2(field)
-    psd2d = (fft.abs() ** 2) / field.numel()
-    psd2d = torch.fft.fftshift(psd2d)
+    psd2d = torch.fft.fftshift((fft.abs() ** 2) / field.numel())
+    bin_sums = torch.bincount(radius_bins, weights=psd2d.reshape(-1), minlength=counts.numel())
+    bin_psd = bin_sums / counts.clamp(min=1)
 
-    h, w = field.shape
-    y = torch.arange(h, dtype=torch.float32) - (h // 2)
-    x = torch.arange(w, dtype=torch.float32) - (w // 2)
-    x_grid, y_grid = torch.meshgrid(x, y, indexing="xy")
-    radius = torch.sqrt(x_grid ** 2 + y_grid ** 2)
-
-    max_radius = int(radius.max().item())
-    bins = torch.arange(max_radius + 1)
-
-    bin_psd = torch.zeros_like(bins, dtype=torch.float32)
-
-    r_flat = radius.flatten().long()
-    psd_flat = psd2d.flatten()
-
-    for b in range(len(bins)):
-        mask = r_flat == b
-        if mask.any():
-            bin_psd[b] = psd_flat[mask].mean()
-
-    freqs = bins / (max(h, w) * d)
+    freqs = torch.arange(counts.numel(), device=field.device, dtype=torch.float32) / (max(h, w) * d)
     if return_freq:
         return freqs, bin_psd
     return bin_psd
-
-
-def _masked_field(field: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    valid = mask.to(field.dtype)
-    return field * valid
 
 
 def rapsd_distance(
@@ -215,25 +214,41 @@ def rapsd_distance(
     target_dbz = _ensure_dbz(target)
     pred_dbz = _as_bt_hw(pred_dbz)
     target_dbz = _as_bt_hw(target_dbz)
-    valid = _valid_mask(target_dbz, mask=mask)
+    valid = _valid_mask(target_dbz, mask=mask).to(pred_dbz.dtype)
 
     batch, lead, h, w = pred_dbz.shape
-    dist_per_lead = []
+    pred_fields = (pred_dbz * valid).reshape(batch * lead, h, w).float()
+    target_fields = (target_dbz * valid).reshape(batch * lead, h, w).float()
 
-    for t in range(lead):
-        diffs = []
-        for b in range(batch):
-            field_mask = valid[b, t]
-            _, p_psd = rapsd_field(_masked_field(pred_dbz[b, t], field_mask), d=d, return_freq=True)
-            _, t_psd = rapsd_field(_masked_field(target_dbz[b, t], field_mask), d=d, return_freq=True)
-            n = min(len(p_psd), len(t_psd))
-            if n <= 1:
-                diffs.append(0.0)
-                continue
+    radius_bins, counts = _get_rapsd_bins(h, w, pred_fields.device)
+    n_bins = counts.numel()
 
-            p_curve = torch.log10(p_psd[1:n] + EPS)
-            t_curve = torch.log10(t_psd[1:n] + EPS)
-            diffs.append(torch.sqrt(((p_curve - t_curve) ** 2).mean()).item())
-        dist_per_lead.append(float(torch.tensor(diffs).mean()))
+    pred_fft = torch.fft.fft2(pred_fields, dim=(-2, -1))
+    target_fft = torch.fft.fft2(target_fields, dim=(-2, -1))
+    pred_psd = torch.fft.fftshift((pred_fft.abs() ** 2) / (h * w), dim=(-2, -1)).reshape(batch * lead, -1)
+    target_psd = torch.fft.fftshift((target_fft.abs() ** 2) / (h * w), dim=(-2, -1)).reshape(batch * lead, -1)
 
-    return {"RAPSD_dist_lead": torch.tensor(dist_per_lead), "RAPSD_dist": float(torch.tensor(dist_per_lead).mean())}
+    pred_bin_sums = torch.zeros(batch * lead, n_bins, device=pred_fields.device, dtype=pred_fields.dtype)
+    target_bin_sums = torch.zeros_like(pred_bin_sums)
+    index = radius_bins.unsqueeze(0).expand(batch * lead, -1)
+    pred_bin_sums.scatter_add_(1, index, pred_psd)
+    target_bin_sums.scatter_add_(1, index, target_psd)
+
+    counts = counts.to(pred_fields.device, pred_fields.dtype).clamp(min=1)
+    pred_curve = pred_bin_sums / counts.unsqueeze(0)
+    target_curve = target_bin_sums / counts.unsqueeze(0)
+
+    if n_bins <= 1:
+        dist_per_lead = torch.zeros(lead, dtype=torch.float32, device=pred_fields.device)
+    else:
+        log_diff_sq = (
+            torch.log10(pred_curve[:, 1:] + EPS) - torch.log10(target_curve[:, 1:] + EPS)
+        ) ** 2
+        sample_dist = torch.sqrt(log_diff_sq.mean(dim=1))
+        dist_per_lead = sample_dist.reshape(batch, lead).mean(dim=0)
+
+    dist_per_lead_cpu = dist_per_lead.detach().cpu()
+    return {
+        "RAPSD_dist_lead": dist_per_lead_cpu,
+        "RAPSD_dist": float(dist_per_lead_cpu.mean()),
+    }
