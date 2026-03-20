@@ -1,5 +1,6 @@
 # Models
 from models.conv_lstm import ConvLSTMForecaster
+from models.conv_lstm_cand import ConvLSTMForecasterCand
 from models.smaat_unet import SmaAtUNet
 
 # Data loader
@@ -51,7 +52,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args):
 
         optimizer.zero_grad()
 
-        if args.model == "base_network":
+        if args.model in {"base_network", "base_network_cand"}:
             pred = model(
                 x,
                 t_out=y.shape[1],
@@ -101,7 +102,7 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
             x = x.to(device)
             y = y.to(device)
 
-            if args.model == "base_network":
+            if args.model in {"base_network", "base_network_cand"}:
                 pred = model(x, t_out=y.shape[1])
             else:
                 pred = model(x)
@@ -249,7 +250,13 @@ def main():
     ap = argparse.ArgumentParser(description="Radar precipitation nowcasting training")
 
     # Model choice
-    ap.add_argument("--model", type=str, default="base_network", choices=["base_network", "smaat_unet"], help="Model architecture to use")
+    ap.add_argument(
+        "--model",
+        type=str,
+        default="base_network",
+        choices=["base_network", "base_network_cand", "smaat_unet"],
+        help="Model architecture to use",
+    )
 
     # Sequence config
     ap.add_argument("--stations", nargs="+", default=["KAMX"], help="Radar station IDs to use")
@@ -339,6 +346,8 @@ def main():
         model = SmaAtUNet(in_channels=args.t_in, out_channels=args.t_out)
     elif args.model == "base_network":
         model = ConvLSTMForecaster(hidden_ch=args.hidden_ch, num_layers=args.num_layers)
+    elif args.model == "base_network_cand":
+        model = ConvLSTMForecasterCand(hidden_ch=args.hidden_ch, num_layers=args.num_layers)
     else:
         raise ValueError("Invalid model name")
     
