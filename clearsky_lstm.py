@@ -337,13 +337,20 @@ def main():
     # ------------ 3. Build selected model ------------
     if args.model == "smaat_unet":
         model = SmaAtUNet(in_channels=args.t_in, out_channels=args.t_out)
-    else:
+    elif args.model == "base_network":
         model = ConvLSTMForecaster(hidden_ch=args.hidden_ch, num_layers=args.num_layers)
+    else:
+        raise ValueError("Invalid model name")
+    
     print("Model built!")
     
 
     # ------------ 4. Train selected model ------------
     model = model.to(device)
+    if args.model == "base_network":
+        sample_x, _ = next(iter(train_loader))
+        model.initialize_for_input(sample_x.to(device))
+
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=args.lr,

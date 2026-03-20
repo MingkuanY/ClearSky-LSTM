@@ -51,6 +51,17 @@ class ConvLSTMCell(nn.Module):
         self.w_cf = nn.Parameter(torch.zeros(shape, device=device, dtype=dtype))
         self.w_co = nn.Parameter(torch.zeros(shape, device=device, dtype=dtype))
 
+    def initialize_peepholes(self, height, width, device, dtype):
+        if self.w_ci is None:
+            self._init_peepholes(height, width, device, dtype)
+            return
+
+        if self.w_ci.shape[-2:] != (height, width):
+            raise ValueError(
+                "ConvLSTMCell peepholes were initialized for "
+                f"{self.w_ci.shape[-2:]} but received {(height, width)}"
+            )
+
     def init_state(self, x):
         batch_size, _, height, width = x.shape
         if self.w_ci is None or self.w_ci.shape[-2:] != (height, width):
@@ -127,6 +138,11 @@ class ConvLSTMForecaster(nn.Module):
             cur_input = h_next
 
         return next_states, hidden_outputs
+
+    def initialize_for_input(self, x):
+        _, _, _, height, width = x.shape
+        for cell in list(self.encoder_cells) + list(self.forecaster_cells):
+            cell.initialize_peepholes(height, width, x.device, x.dtype)
 
     def forward(self, x, t_out, teacher_forcing=0.0, y=None):
         _, t_in, _, _, _ = x.shape
