@@ -44,10 +44,15 @@ pyart gridding cost from every training step.
 ```bash
 python cache_nexrad.py            # uses all CPU cores by default
 python cache_nexrad.py --workers 4 --stations KAMX   # limit cores/stations
+python cache_nexrad.py --stations KAMX --start 2022-07-01 --end 2022-07-15
 ```
 
 Cached files land at `data/cache/YYYY/MM/DD/<STATION>/<filename>.npy`.
 Caching is also idempotent.
+
+Training and testing can run from cache only. Once `data/cache` is populated,
+`clearsky_lstm.py` uses cached-only loading and will fail fast if required cache
+files are missing instead of falling back to raw parsing.
 
 ### 3 — Verify (sanity check)
 
@@ -74,12 +79,26 @@ ds = NEXRADDataset(
     stations=["KAMX"],
     t_in=6,           # past frames fed to encoder - x: [T_in,  1, 256, 256]
     t_out=6,          # future frames to predict   - y: [T_out, 1, 256, 256]
-    cache_root="data/cache",   # omit to use pyart directly (slow)
+    interval=0,       # 0 = consecutive frames, 1 = skip one between frames
+    cache_root="data/cache",
+    cache_only=True,
 )
 x, y = ds[0]   # x: [6, 1, 256, 256], y: [6, 1, 256, 256], values in [0, 1]
 ```
 
 Each frame is normalised to `[0, 1]` from the standard NEXRAD dBZ range `[−32, 70]`.
+
+`interval` controls spacing within each sample while the dataset still slides by
+one frame at a time. With `t_in=2`, `t_out=2`:
+
+- `interval=0` uses `[[1,2],[3,4]]`, `[[2,3],[4,5]]`, ...
+- `interval=1` uses `[[1,3],[5,7]]`, `[[2,4],[6,8]]`, ...
+- `interval=2` uses `[[1,4],[7,10]]`, `[[2,5],[8,11]]`, ...
+
+Windows are built from each station's full time-sorted sequence, so they can
+cross date boundaries. If late-night scans from `2022-10-10` are immediately
+followed by early-morning scans from `2022-10-11`, one sample can include both
+dates as long as those files are present in the cache or raw tree.
 
 ---
 

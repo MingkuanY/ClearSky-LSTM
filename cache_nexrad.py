@@ -16,6 +16,9 @@ Usage
     # Cache everything in data/raw/ using all available CPU cores
     python cache_nexrad.py
 
+    # Cache a date range only
+    python cache_nexrad.py --start 2022-07-01 --end 2022-07-15
+
     # Cache only specific stations, limit parallelism
     python cache_nexrad.py --stations KAMX KFTG --workers 4
 
@@ -26,6 +29,7 @@ Usage
 import argparse
 import multiprocessing as mp
 import warnings
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -62,10 +66,26 @@ def _cache_one(job: tuple[Path, Path]) -> tuple[str, str]:
         return raw_path.name, f"error: {exc}"
 
 
+def parse_date(s: str) -> date:
+    return date.fromisoformat(s)
+
+
+def _date_from_raw_path(raw_path: Path, raw_root: Path) -> date:
+    """Extract YYYY/MM/DD from a raw file path rooted at *raw_root*."""
+    rel = raw_path.relative_to(raw_root)
+    try:
+        year, month, day = rel.parts[:3]
+    except ValueError as exc:
+        raise ValueError(f"Unexpected raw path layout: {raw_path}") from exc
+    return date(int(year), int(month), int(day))
+
+
 def build_jobs(
     raw_root: Path,
     cache_root: Path,
     stations: list[str] | None,
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[tuple[Path, Path]]:
     """Return sorted list of (raw_path, cache_path) pairs to process."""
     jobs = []
@@ -76,6 +96,11 @@ def build_jobs(
         # data/raw/YYYY/MM/DD/<STATION>/<file>
         station = raw_path.parent.name
         if stations and station not in stations:
+            continue
+        scan_date = _date_from_raw_path(raw_path, raw_root)
+        if start is not None and scan_date < start:
+            continue
+        if end is not None and scan_date > end:
             continue
         rel = raw_path.relative_to(raw_root)
         cache_path = cache_root / rel.parent / (rel.name + ".npy")
@@ -89,6 +114,20 @@ def main() -> None:
     )
     parser.add_argument("--raw-root",   default="data/raw",   metavar="DIR")
     parser.add_argument("--cache-root", default="data/cache", metavar="DIR")
+    parser.add_argument(
+        "--start",
+        type=parse_date,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="First date to cache (inclusive). Default: no lower bound.",
+    )
+    parser.add_argument(
+        "--end",
+        type=parse_date,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Last date to cache (inclusive). Default: no upper bound.",
+    )
     parser.add_argument(
         "--stations",
         nargs="+",
@@ -105,6 +144,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.start is not None and args.end is not None and args.end < args.start:
+        parser.error("--end must be on or after --start.")
+
     raw_root   = Path(args.raw_root)
     cache_root = Path(args.cache_root)
 
@@ -112,7 +154,13 @@ def main() -> None:
         print(f"Error: raw root {raw_root} does not exist. Run download_nexrad.py first.")
         return
 
-    jobs = build_jobs(raw_root, cache_root, args.stations)
+    jobs = build_jobs(
+        raw_root,
+        cache_root,
+        args.stations,
+        start=args.start,
+        end=args.end,
+    )
     if not jobs:
         print("No scan files found to cache.")
         return
