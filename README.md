@@ -44,6 +44,7 @@ pyart gridding cost from every training step.
 ```bash
 python cache_nexrad.py            # uses all CPU cores by default
 python cache_nexrad.py --workers 4 --stations KAMX   # limit cores/stations
+python cache_nexrad.py --stations KAMX --start 2022-07-01 --end 2022-07-15
 ```
 
 Cached files land at `data/cache/YYYY/MM/DD/<STATION>/<filename>.npy`.
@@ -93,6 +94,11 @@ one frame at a time. With `t_in=2`, `t_out=2`:
 - `interval=0` uses `[[1,2],[3,4]]`, `[[2,3],[4,5]]`, ...
 - `interval=1` uses `[[1,3],[5,7]]`, `[[2,4],[6,8]]`, ...
 - `interval=2` uses `[[1,4],[7,10]]`, `[[2,5],[8,11]]`, ...
+
+Windows are built from each station's full time-sorted sequence, so they can
+cross date boundaries. If late-night scans from `2022-10-10` are immediately
+followed by early-morning scans from `2022-10-11`, one sample can include both
+dates as long as those files are present in the cache or raw tree.
 
 ---
 
