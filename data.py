@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
-import pyart
 import torch
 from torch.utils.data import Dataset
 
@@ -51,6 +50,8 @@ def parse_nexrad_file(
     -------
     ref : float32 ndarray of shape (H, W), values in dBZ.
     """
+    import pyart
+
     H, W = grid_shape
     pixel_m = (2 * grid_radius) / H
 
@@ -94,11 +95,20 @@ def _sorted_scan_paths(data_root: str | os.PathLike, station: str) -> list[Path]
     return sorted(paths)
 
 
+def _sorted_cache_paths(data_root: str | os.PathLike, station: str) -> list[Path]:
+    """Return sorted cached scan paths for *station* under *data_root*."""
+    root = Path(data_root)
+    paths = [
+        p for p in root.rglob(f"{station}/*.npy")
+        if p.is_file() and not p.name.startswith(".")
+    ]
+    return sorted(paths)
+
+
 def _cache_path_for(raw_path: Path, raw_root: Path, cache_root: Path) -> Path:
     """Derive the .npy cache path corresponding to a raw scan path."""
     rel = raw_path.relative_to(raw_root)
     return cache_root / rel.parent / (rel.name + ".npy")
-
 class NEXRADDataset(Dataset):
     """Sliding-window sequence dataset over one or more NEXRAD stations.
 
@@ -110,6 +120,9 @@ class NEXRADDataset(Dataset):
     cache_root  : If provided, load pre-computed .npy grids from here instead
                   of running pyart on every __getitem__ call.
                   Run cache_nexrad.py once to populate this directory.
+    cache_only  : If True, build windows from cached .npy files and never fall
+                  back to raw files. If raw_root is missing and cache_root is
+                  provided, this mode is enabled automatically.
     grid_shape  : Spatial resolution (H, W) — must match what was used when
                   building the cache (default matches cache_nexrad.py).
     grid_radius : Cartesian domain half-width in metres.
@@ -123,6 +136,7 @@ class NEXRADDataset(Dataset):
         t_in: int = 6,
         t_out: int = 6,
         cache_root: str | os.PathLike | None = None,
+        cache_only: bool = False,
         grid_shape: tuple[int, int] = GRID_SHAPE,
         grid_radius: float = GRID_RADIUS,
         transform=None,
@@ -132,6 +146,9 @@ class NEXRADDataset(Dataset):
         self.window = t_in + t_out
         self.raw_root   = Path(raw_root)
         self.cache_root = Path(cache_root) if cache_root else None
+        self.cache_only = cache_only or (
+            self.cache_root is not None and not self.raw_root.exists()
+        )
         self.grid_shape = grid_shape
         self.grid_radius = grid_radius
         self.transform = transform
@@ -139,13 +156,21 @@ class NEXRADDataset(Dataset):
         self._windows: list[tuple[list[Path], int]] = []
 
         for station in stations:
-            paths = _sorted_scan_paths(self.raw_root, station)
+            if self.cache_only:
+                if self.cache_root is None:
+                    raise ValueError("cache_only=True requires cache_root to be set.")
+                paths = _sorted_cache_paths(self.cache_root, station)
+            else:
+                paths = _sorted_scan_paths(self.raw_root, station)
             n = len(paths)
             if n == 0:
-                print(
-                    f"Warning: no scans found for {station} under {self.raw_root}. "
-                    f"Run download_nexrad.py first."
+                root = self.cache_root if self.cache_only else self.raw_root
+                mode_hint = (
+                    "Run cache_nexrad.py first."
+                    if self.cache_only
+                    else "Run download_nexrad.py first."
                 )
+                print(f"Warning: no scans found for {station} under {root}. {mode_hint}")
                 continue
             if n < self.window:
                 print(
@@ -157,12 +182,17 @@ class NEXRADDataset(Dataset):
                 self._windows.append((paths, start))
 
         if not self._windows:
+            missing_root = self.cache_root if self.cache_only else self.raw_root
             raise RuntimeError(
-                "No valid windows found. Check that data/raw/ is populated."
+                f"No valid windows found. Check that {missing_root} is populated."
             )
 
-    def _load_frame(self, raw_path: Path) -> np.ndarray:
+    def _load_frame(self, path: Path) -> np.ndarray:
         """Return a (H, W) float32 array in dBZ, using cache when available."""
+        if self.cache_only:
+            return np.load(str(path))
+
+        raw_path = path
         if self.cache_root is not None:
             cache_path = _cache_path_for(raw_path, self.raw_root, self.cache_root)
             if cache_path.exists():

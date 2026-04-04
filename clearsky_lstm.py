@@ -308,7 +308,8 @@ def main():
         stations=args.stations,
         t_in=args.t_in,               # past frames fed to encoder - x: [T_in,  1, 256, 256]
         t_out=args.t_out,             # future frames to predict   - y: [T_out, 1, 256, 256]
-        cache_root="data/cache",      # omit to use pyart directly (slow)
+        cache_root="data/cache",
+        cache_only=True,
     )
 
     # Split data into train/val/test sets

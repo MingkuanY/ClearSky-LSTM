@@ -49,6 +49,10 @@ python cache_nexrad.py --workers 4 --stations KAMX   # limit cores/stations
 Cached files land at `data/cache/YYYY/MM/DD/<STATION>/<filename>.npy`.
 Caching is also idempotent.
 
+Training and testing can run from cache only. Once `data/cache` is populated,
+`clearsky_lstm.py` uses cached-only loading and will fail fast if required cache
+files are missing instead of falling back to raw parsing.
+
 ### 3 — Verify (sanity check)
 
 Parses a handful of files and plots the resulting reflectivity grids to
@@ -74,7 +78,8 @@ ds = NEXRADDataset(
     stations=["KAMX"],
     t_in=6,           # past frames fed to encoder - x: [T_in,  1, 256, 256]
     t_out=6,          # future frames to predict   - y: [T_out, 1, 256, 256]
-    cache_root="data/cache",   # omit to use pyart directly (slow)
+    cache_root="data/cache",
+    cache_only=True,
 )
 x, y = ds[0]   # x: [6, 1, 256, 256], y: [6, 1, 256, 256], values in [0, 1]
 ```
