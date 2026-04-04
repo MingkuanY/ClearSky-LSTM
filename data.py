@@ -117,6 +117,9 @@ class NEXRADDataset(Dataset):
     stations    : List of station IDs, e.g. ["KAMX", "KFTG"].
     t_in        : Number of past frames per input sequence.
     t_out       : Number of future frames to predict.
+    interval    : Number of frames to skip between successive frames inside a
+                  sample. `0` means consecutive frames, `1` means every other
+                  frame, etc.
     cache_root  : If provided, load pre-computed .npy grids from here instead
                   of running pyart on every __getitem__ call.
                   Run cache_nexrad.py once to populate this directory.
@@ -135,15 +138,22 @@ class NEXRADDataset(Dataset):
         stations: Sequence[str],
         t_in: int = 6,
         t_out: int = 6,
+        interval: int = 0,
         cache_root: str | os.PathLike | None = None,
         cache_only: bool = False,
         grid_shape: tuple[int, int] = GRID_SHAPE,
         grid_radius: float = GRID_RADIUS,
         transform=None,
     ):
+        if interval < 0:
+            raise ValueError("interval must be >= 0.")
+
         self.t_in = t_in
         self.t_out = t_out
         self.window = t_in + t_out
+        self.interval = interval
+        self.frame_step = interval + 1
+        self.window_span = (self.window - 1) * self.frame_step + 1
         self.raw_root   = Path(raw_root)
         self.cache_root = Path(cache_root) if cache_root else None
         self.cache_only = cache_only or (
@@ -172,13 +182,14 @@ class NEXRADDataset(Dataset):
                 )
                 print(f"Warning: no scans found for {station} under {root}. {mode_hint}")
                 continue
-            if n < self.window:
+            if n < self.window_span:
                 print(
                     f"Warning: {station} has only {n} scans "
-                    f"(need {self.window}); skipping."
+                    f"(need {self.window_span} for t_in={self.t_in}, "
+                    f"t_out={self.t_out}, interval={self.interval}); skipping."
                 )
                 continue
-            for start in range(n - self.window + 1):
+            for start in range(n - self.window_span + 1):
                 self._windows.append((paths, start))
 
         if not self._windows:
@@ -204,7 +215,10 @@ class NEXRADDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         paths, start = self._windows[idx]
-        window_paths = paths[start : start + self.window]
+        window_paths = [
+            paths[start + i * self.frame_step]
+            for i in range(self.window)
+        ]
 
         frames: list[torch.Tensor] = []
         for p in window_paths:

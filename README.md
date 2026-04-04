@@ -78,6 +78,7 @@ ds = NEXRADDataset(
     stations=["KAMX"],
     t_in=6,           # past frames fed to encoder - x: [T_in,  1, 256, 256]
     t_out=6,          # future frames to predict   - y: [T_out, 1, 256, 256]
+    interval=0,       # 0 = consecutive frames, 1 = skip one between frames
     cache_root="data/cache",
     cache_only=True,
 )
@@ -85,6 +86,13 @@ x, y = ds[0]   # x: [6, 1, 256, 256], y: [6, 1, 256, 256], values in [0, 1]
 ```
 
 Each frame is normalised to `[0, 1]` from the standard NEXRAD dBZ range `[−32, 70]`.
+
+`interval` controls spacing within each sample while the dataset still slides by
+one frame at a time. With `t_in=2`, `t_out=2`:
+
+- `interval=0` uses `[[1,2],[3,4]]`, `[[2,3],[4,5]]`, ...
+- `interval=1` uses `[[1,3],[5,7]]`, `[[2,4],[6,8]]`, ...
+- `interval=2` uses `[[1,4],[7,10]]`, `[[2,5],[8,11]]`, ...
 
 ---
 

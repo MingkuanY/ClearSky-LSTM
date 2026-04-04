@@ -262,6 +262,12 @@ def main():
     ap.add_argument("--stations", nargs="+", default=["KAMX"], help="Radar station IDs to use")
     ap.add_argument("--t-in", type=int, default=6, help="Number of past radar frames used as input")
     ap.add_argument("--t-out", type=int, default=6, help="Number of future radar frames to predict")
+    ap.add_argument(
+        "--interval",
+        type=int,
+        default=0,
+        help="Number of frames to skip between successive frames in each sample",
+    )
 
     # Train/test/val splits
     ap.add_argument("--val-frac", type=float, default=0.1, help="Fraction of dataset used for validation")
@@ -308,6 +314,7 @@ def main():
         stations=args.stations,
         t_in=args.t_in,               # past frames fed to encoder - x: [T_in,  1, 256, 256]
         t_out=args.t_out,             # future frames to predict   - y: [T_out, 1, 256, 256]
+        interval=args.interval,
         cache_root="data/cache",
         cache_only=True,
     )
