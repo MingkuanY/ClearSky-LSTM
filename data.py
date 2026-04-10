@@ -17,6 +17,7 @@ Dataset
 
 import os
 import warnings
+from datetime import date
 from pathlib import Path
 from typing import Sequence
 
@@ -109,6 +110,37 @@ def _cache_path_for(raw_path: Path, raw_root: Path, cache_root: Path) -> Path:
     """Derive the .npy cache path corresponding to a raw scan path."""
     rel = raw_path.relative_to(raw_root)
     return cache_root / rel.parent / (rel.name + ".npy")
+
+
+def _scan_date_from_path(path: Path) -> date:
+    """Extract YYYY/MM/DD from cached or raw scan paths."""
+    parts = path.parts
+    for i in range(len(parts) - 3):
+        year, month, day = parts[i], parts[i + 1], parts[i + 2]
+        if len(year) == 4 and year.isdigit() and len(month) == 2 and month.isdigit() and len(day) == 2 and day.isdigit():
+            return date(int(year), int(month), int(day))
+    raise ValueError(f"Could not extract scan date from path: {path}")
+
+
+def _filter_paths_by_date_range(
+    paths: list[Path],
+    start_date: date | None,
+    end_date: date | None,
+) -> list[Path]:
+    if start_date is None and end_date is None:
+        return paths
+
+    filtered: list[Path] = []
+    for path in paths:
+        scan_date = _scan_date_from_path(path)
+        if start_date is not None and scan_date < start_date:
+            continue
+        if end_date is not None and scan_date > end_date:
+            continue
+        filtered.append(path)
+    return filtered
+
+
 class NEXRADDataset(Dataset):
     """Sliding-window sequence dataset over one or more NEXRAD stations.
 
@@ -141,12 +173,16 @@ class NEXRADDataset(Dataset):
         interval: int = 0,
         cache_root: str | os.PathLike | None = None,
         cache_only: bool = False,
+        start_date: date | None = None,
+        end_date: date | None = None,
         grid_shape: tuple[int, int] = GRID_SHAPE,
         grid_radius: float = GRID_RADIUS,
         transform=None,
     ):
         if interval < 0:
             raise ValueError("interval must be >= 0.")
+        if start_date is not None and end_date is not None and start_date > end_date:
+            raise ValueError("start_date must be <= end_date.")
 
         self.t_in = t_in
         self.t_out = t_out
@@ -172,6 +208,7 @@ class NEXRADDataset(Dataset):
                 paths = _sorted_cache_paths(self.cache_root, station)
             else:
                 paths = _sorted_scan_paths(self.raw_root, station)
+            paths = _filter_paths_by_date_range(paths, start_date, end_date)
             n = len(paths)
             if n == 0:
                 root = self.cache_root if self.cache_only else self.raw_root

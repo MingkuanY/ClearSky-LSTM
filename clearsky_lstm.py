@@ -84,6 +84,15 @@ def build_loss(loss_name: str) -> torch.nn.Module:
     return LOSS_FUNCTIONS[loss_name]()
 
 
+def parse_cli_date(value: str) -> datetime.date:
+    try:
+        return datetime.datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Invalid date '{value}'. Expected format: YYYY-MM-DD"
+        ) from exc
+
+
 def train_one_epoch(model, loader, optimizer, criterion, device, args):
     """ Training loop for one epoch """
     model.train()
@@ -314,7 +323,10 @@ def main():
 
     # Train/test/val splits
     ap.add_argument("--val-frac", type=float, default=0.1, help="Fraction of dataset used for validation")
-    ap.add_argument("--test-frac", type=float, default=0.1, help="Fraction of dataset used for testing")
+    ap.add_argument("--train-start-date", type=parse_cli_date, required=True, help="Inclusive training start date (YYYY-MM-DD)")
+    ap.add_argument("--train-end-date", type=parse_cli_date, required=True, help="Inclusive training end date (YYYY-MM-DD)")
+    ap.add_argument("--test-start-date", type=parse_cli_date, required=True, help="Inclusive test start date (YYYY-MM-DD)")
+    ap.add_argument("--test-end-date", type=parse_cli_date, required=True, help="Inclusive test end date (YYYY-MM-DD)")
 
     # Data loading params
     ap.add_argument("--batch-size", type=int, default=8, help="Training batch size")
@@ -344,6 +356,11 @@ def main():
     print("Starting model...")
     args = ap.parse_args()
 
+    if args.train_start_date > args.train_end_date:
+        ap.error("--train-start-date must be on or before --train-end-date")
+    if args.test_start_date > args.test_end_date:
+        ap.error("--test-start-date must be on or before --test-end-date")
+
     # Enforce mandatory output folder for metrics and samples
     stamp = datetime.datetime.now().strftime("%Y%m%d")
     random_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
@@ -359,7 +376,7 @@ def main():
 
     # ---------------- 2. Data loading ----------------
     print("Building dataset...")
-    ds = NEXRADDataset(
+    train_val_ds = NEXRADDataset(
         raw_root="data/raw",
         stations=args.stations,
         t_in=args.t_in,               # past frames fed to encoder - x: [T_in,  1, 256, 256]
@@ -367,17 +384,33 @@ def main():
         interval=args.interval,
         cache_root="data/cache",
         cache_only=True,
+        start_date=args.train_start_date,
+        end_date=args.train_end_date,
+    )
+    test_ds = NEXRADDataset(
+        raw_root="data/raw",
+        stations=args.stations,
+        t_in=args.t_in,
+        t_out=args.t_out,
+        interval=args.interval,
+        cache_root="data/cache",
+        cache_only=True,
+        start_date=args.test_start_date,
+        end_date=args.test_end_date,
     )
 
-    # Split data into train/val/test sets
-    n = len(ds)
+    # Split training-range data into train/val, and keep test-range data isolated.
+    n = len(train_val_ds)
     n_val = int(args.val_frac * n)
-    n_test = int(args.test_frac * n)
-    n_train = n - n_val - n_test
+    n_train = n - n_val
+    if n_train <= 0:
+        raise ValueError(
+            f"Training date range produced {n} samples, which is too small for val_frac={args.val_frac}."
+        )
     print("Train/val/test split complete!")
 
     torch.manual_seed(args.seed)
-    train_ds, val_ds, test_ds = random_split(ds, [n_train, n_val, n_test])
+    train_ds, val_ds = random_split(train_val_ds, [n_train, n_val])
 
     train_loader = DataLoader(
         train_ds,
