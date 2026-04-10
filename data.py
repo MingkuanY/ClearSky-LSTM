@@ -16,6 +16,7 @@ Dataset
 """
 
 import os
+import sys
 import warnings
 from datetime import date
 from pathlib import Path
@@ -238,13 +239,21 @@ class NEXRADDataset(Dataset):
     def _load_frame(self, path: Path) -> np.ndarray:
         """Return a (H, W) float32 array in dBZ, using cache when available."""
         if self.cache_only:
-            return np.load(str(path))
+            try:
+                return np.load(str(path))
+            except Exception as exc:
+                print(f"Failed to load cached frame: {path}", file=sys.stderr, flush=True)
+                raise RuntimeError(f"Failed to load cached frame: {path}") from exc
 
         raw_path = path
         if self.cache_root is not None:
             cache_path = _cache_path_for(raw_path, self.raw_root, self.cache_root)
             if cache_path.exists():
-                return np.load(str(cache_path))
+                try:
+                    return np.load(str(cache_path))
+                except Exception as exc:
+                    print(f"Failed to load cached frame: {cache_path}", file=sys.stderr, flush=True)
+                    raise RuntimeError(f"Failed to load cached frame: {cache_path}") from exc
         return parse_nexrad_file(raw_path, self.grid_shape, self.grid_radius)
 
     def __len__(self) -> int:
@@ -258,10 +267,18 @@ class NEXRADDataset(Dataset):
         ]
 
         frames: list[torch.Tensor] = []
-        for p in window_paths:
-            ref  = self._load_frame(p)
-            norm = normalize(ref)
-            frames.append(torch.from_numpy(norm).unsqueeze(0))  # (1, H, W)
+        try:
+            for p in window_paths:
+                ref  = self._load_frame(p)
+                norm = normalize(ref)
+                frames.append(torch.from_numpy(norm).unsqueeze(0))  # (1, H, W)
+        except Exception as exc:
+            print(f"Failed sample window at dataset index {idx}", file=sys.stderr, flush=True)
+            for p in window_paths:
+                print(f"  window frame: {p}", file=sys.stderr, flush=True)
+            raise RuntimeError(
+                f"Failed to build sample window at dataset index {idx}. See logged frame paths above."
+            ) from exc
 
         x = torch.stack(frames[: self.t_in])   # [T_in,  1, H, W]
         y = torch.stack(frames[self.t_in :])   # [T_out, 1, H, W]
