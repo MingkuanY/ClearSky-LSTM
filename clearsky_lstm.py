@@ -28,6 +28,12 @@ from metrics import (
     fractions_skill_score,
     rapsd_distance,
 )
+from loss_functions import (
+    ReflectivityBMSELoss,
+    ReflectivityBMAELoss,
+    ReflectivityBalancedLoss,
+    SSIMLoss,
+)
 
 # Train/test utils
 import argparse
@@ -39,6 +45,43 @@ elif torch.backends.mps.is_available():
     device = torch.device('mps')
 else:
     device = torch.device('cpu')
+
+
+LOSS_FUNCTIONS = {
+    "l1": torch.nn.L1Loss,
+    "l2": torch.nn.MSELoss,
+    "reflectivity_bmse": ReflectivityBMSELoss,
+    "reflectivity_bmae": ReflectivityBMAELoss,
+    "reflectivity_balanced": ReflectivityBalancedLoss,
+    "ssim": SSIMLoss,
+}
+
+
+class FramewiseLossAdapter(torch.nn.Module):
+    """Apply 2D image losses framewise on [B, T, C, H, W] tensors."""
+
+    def __init__(self, base_loss: torch.nn.Module):
+        super().__init__()
+        self.base_loss = base_loss
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if pred.shape != target.shape:
+            raise ValueError(
+                f"Prediction and target must have the same shape, got {tuple(pred.shape)} and {tuple(target.shape)}"
+            )
+
+        if pred.ndim == 5:
+            b, t, c, h, w = pred.shape
+            pred = pred.reshape(b * t, c, h, w)
+            target = target.reshape(b * t, c, h, w)
+
+        return self.base_loss(pred, target)
+
+
+def build_loss(loss_name: str) -> torch.nn.Module:
+    if loss_name == "ssim":
+        return FramewiseLossAdapter(SSIMLoss())
+    return LOSS_FUNCTIONS[loss_name]()
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device, args):
@@ -281,6 +324,13 @@ def main():
     ap.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
     ap.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     ap.add_argument("--weight-decay", type=float, default=0.0, help="Optimizer weight decay")
+    ap.add_argument(
+        "--loss-function",
+        type=str,
+        default="l1",
+        choices=sorted(LOSS_FUNCTIONS.keys()),
+        help="Loss function to use for training and evaluation",
+    )
 
     # ConvLSTM architecture
     ap.add_argument("--hidden-ch", type=int, nargs="+", default=[64,64,64], help="Number of ConvLSTM hidden channels")
@@ -297,7 +347,7 @@ def main():
     # Enforce mandatory output folder for metrics and samples
     stamp = datetime.datetime.now().strftime("%Y%m%d")
     random_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    subpath = os.path.join(stamp, args.model, random_id)
+    subpath = os.path.join(stamp, args.model, args.loss_function, random_id)
 
     args.sample_dir = os.path.join("samples", subpath)
     args.results_dir = os.path.join("results", subpath)
@@ -370,9 +420,10 @@ def main():
         weight_decay=args.weight_decay
     )
 
-    criterion = torch.nn.L1Loss()
+    criterion = build_loss(args.loss_function)
 
     print("Beginning training...")
+    print(f"Using loss function: {args.loss_function}")
     print("Note: higher blur score = sharper image!")
     history = []
     for epoch in range(args.epochs):
