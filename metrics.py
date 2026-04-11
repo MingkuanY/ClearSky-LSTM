@@ -48,6 +48,8 @@ def regression_metrics(pred: torch.Tensor, target: torch.Tensor, mask: torch.Ten
 
     pred_dbz = _as_bt_hw(pred_dbz)
     target_dbz = _as_bt_hw(target_dbz)
+    pred_dbz = pred_dbz.float()
+    target_dbz = target_dbz.float()
 
     valid = _valid_mask(target_dbz, mask=mask)
     valid = valid.to(pred_dbz.dtype)
@@ -93,6 +95,8 @@ def contingency_metrics(pred: torch.Tensor, target: torch.Tensor, thresholds=(20
 
     pred_dbz = _as_bt_hw(pred_dbz)
     target_dbz = _as_bt_hw(target_dbz)
+    pred_dbz = pred_dbz.float()
+    target_dbz = target_dbz.float()
 
     valid = _valid_mask(target_dbz, mask=mask)
 
@@ -111,6 +115,8 @@ def fractions_skill_score(pred: torch.Tensor, target: torch.Tensor, thresholds=(
     target_dbz = _ensure_dbz(target)
     pred_dbz = _as_bt_hw(pred_dbz)
     target_dbz = _as_bt_hw(target_dbz)
+    pred_dbz = pred_dbz.float()
+    target_dbz = target_dbz.float()
 
     valid = _valid_mask(target_dbz, mask=mask).to(pred_dbz.dtype)
 
@@ -214,6 +220,8 @@ def rapsd_distance(
     target_dbz = _ensure_dbz(target)
     pred_dbz = _as_bt_hw(pred_dbz)
     target_dbz = _as_bt_hw(target_dbz)
+    pred_dbz = pred_dbz.float()
+    target_dbz = target_dbz.float()
     valid = _valid_mask(target_dbz, mask=mask).to(pred_dbz.dtype)
 
     batch, lead, h, w = pred_dbz.shape
