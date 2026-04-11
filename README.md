@@ -100,6 +100,74 @@ cross date boundaries. If late-night scans from `2022-10-10` are immediately
 followed by early-morning scans from `2022-10-11`, one sample can include both
 dates as long as those files are present in the cache or raw tree.
 
+`window_stride` controls how densely sliding windows are generated. The default
+is `1`, which keeps every possible window start. Larger values reduce dataset
+size and training time by skipping overlapping starts. For example, `window_stride=5`
+keeps every 5th sample window.
+
+---
+
+## Training
+
+Training now requires explicit train and test date ranges. The training date
+range is used to build the dataset that is later split into train/validation,
+and the test date range is used only for the final test set.
+
+```bash
+python clearsky_lstm.py \
+    --model base_network \
+    --stations KAMX \
+    --t-in 6 \
+    --t-out 6 \
+    --train-start-date 2024-04-01 \
+    --train-end-date 2024-10-31 \
+    --test-start-date 2025-04-01 \
+    --test-end-date 2025-10-31 \
+    --loss-function l1 \
+    --window-stride 5 \
+    --precision amp
+```
+
+### Training options
+
+- `--train-start-date`, `--train-end-date`: required inclusive date range for train/validation data.
+- `--test-start-date`, `--test-end-date`: required inclusive date range for held-out test data.
+- `--loss-function`: loss used for both training and evaluation.
+- `--window-stride`: stride between consecutive sample start indices.
+- `--precision`: `amp` or `float32`. Default is `amp`; AMP is enabled only on CUDA and falls back to `float32` on other devices.
+
+### Supported loss functions
+
+- `l1`
+- `l2`
+- `reflectivity_bmse`
+- `reflectivity_bmae`
+- `reflectivity_balanced`
+- `ssim`
+
+### Precision
+
+Mixed precision (`--precision amp`) is the default for CUDA training and evaluation.
+It usually reduces runtime and memory usage. If you need full precision for debugging
+or reproducibility checks, use `--precision float32`.
+
+### Output layout
+
+Sample visualizations and metric outputs are grouped by date, model, loss function,
+and run ID:
+
+- `samples/{date}/{model}/{loss_function}/{randomid}/`
+- `results/{date}/{model}/{loss_function}/{randomid}/`
+
+### Progress and cache error reporting
+
+Training, validation, and test loops show per-iteration progress bars when `tqdm`
+is available.
+
+If cached `.npy` files are truncated or corrupted, dataset loading now prints the
+exact bad file path and the full sample window so the cache entry can be deleted
+or regenerated.
+
 ---
 
 ## Citation

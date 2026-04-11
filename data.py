@@ -153,6 +153,8 @@ class NEXRADDataset(Dataset):
     interval    : Number of frames to skip between successive frames inside a
                   sample. `0` means consecutive frames, `1` means every other
                   frame, etc.
+    window_stride: Number of start indices to skip between consecutive samples.
+                  `1` keeps every window, `5` keeps every 5th window, etc.
     cache_root  : If provided, load pre-computed .npy grids from here instead
                   of running pyart on every __getitem__ call.
                   Run cache_nexrad.py once to populate this directory.
@@ -172,6 +174,7 @@ class NEXRADDataset(Dataset):
         t_in: int = 6,
         t_out: int = 6,
         interval: int = 0,
+        window_stride: int = 1,
         cache_root: str | os.PathLike | None = None,
         cache_only: bool = False,
         start_date: date | None = None,
@@ -182,6 +185,8 @@ class NEXRADDataset(Dataset):
     ):
         if interval < 0:
             raise ValueError("interval must be >= 0.")
+        if window_stride <= 0:
+            raise ValueError("window_stride must be >= 1.")
         if start_date is not None and end_date is not None and start_date > end_date:
             raise ValueError("start_date must be <= end_date.")
 
@@ -191,6 +196,7 @@ class NEXRADDataset(Dataset):
         self.interval = interval
         self.frame_step = interval + 1
         self.window_span = (self.window - 1) * self.frame_step + 1
+        self.window_stride = window_stride
         self.raw_root   = Path(raw_root)
         self.cache_root = Path(cache_root) if cache_root else None
         self.cache_only = cache_only or (
@@ -227,7 +233,7 @@ class NEXRADDataset(Dataset):
                     f"t_out={self.t_out}, interval={self.interval}); skipping."
                 )
                 continue
-            for start in range(n - self.window_span + 1):
+            for start in range(0, n - self.window_span + 1, self.window_stride):
                 self._windows.append((paths, start))
 
         if not self._windows:

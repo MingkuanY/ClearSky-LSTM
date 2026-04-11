@@ -103,7 +103,11 @@ def progress_iter(loader, desc: str):
     return tqdm(loader, desc=desc, leave=False)
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch):
+def autocast_context(args, device):
+    return torch.autocast(device_type=device.type, enabled=args.use_amp)
+
+
+def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch, scaler):
     """ Training loop for one epoch """
     model.train()
     total_loss = 0
@@ -115,25 +119,32 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch):
 
         optimizer.zero_grad()
 
-        if args.model in {"base_network", "base_network_cand"}:
-            pred = model(
-                x,
-                t_out=y.shape[1],
-                teacher_forcing=args.teacher_forcing,
-                y=y
-            )
-        else:
-            pred = model(x)
+        with autocast_context(args, device):
+            if args.model in {"base_network", "base_network_cand"}:
+                pred = model(
+                    x,
+                    t_out=y.shape[1],
+                    teacher_forcing=args.teacher_forcing,
+                    y=y
+                )
+            else:
+                pred = model(x)
 
-        # These print statements are for testing purposes only
-        # They print range of predicted values vs range of ground truth values
-        if i == 0:
-            print(f"Input Range: {x.min().item():.4f} to {x.max().item():.4f}")
-            print(f"Pred Range: {pred.min().item():.4f} to {pred.max().item():.4f}")
-            print(f"Target Range: {y.min().item():.4f} to {y.max().item():.4f}")
-        loss = criterion(pred, y)
-        loss.backward()
-        optimizer.step()
+            # These print statements are for testing purposes only
+            # They print range of predicted values vs range of ground truth values
+            if i == 0:
+                print(f"Input Range: {x.min().item():.4f} to {x.max().item():.4f}")
+                print(f"Pred Range: {pred.min().item():.4f} to {pred.max().item():.4f}")
+                print(f"Target Range: {y.min().item():.4f} to {y.max().item():.4f}")
+            loss = criterion(pred, y)
+
+        if args.use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         total_loss += loss.item()
         if tqdm is not None:
@@ -168,12 +179,13 @@ def evaluate(model, loader, criterion, device, args, epoch=0, stage="Val"):
             x = x.to(device)
             y = y.to(device)
 
-            if args.model in {"base_network", "base_network_cand"}:
-                pred = model(x, t_out=y.shape[1])
-            else:
-                pred = model(x)
+            with autocast_context(args, device):
+                if args.model in {"base_network", "base_network_cand"}:
+                    pred = model(x, t_out=y.shape[1])
+                else:
+                    pred = model(x)
 
-            loss = criterion(pred, y)
+                loss = criterion(pred, y)
 
             total_loss += loss.item()
             n_batches += 1
@@ -336,6 +348,12 @@ def main():
         default=0,
         help="Number of frames to skip between successive frames in each sample",
     )
+    ap.add_argument(
+        "--window-stride",
+        type=int,
+        default=1,
+        help="Stride between consecutive sliding-window sample start indices",
+    )
 
     # Train/test/val splits
     ap.add_argument("--val-frac", type=float, default=0.1, help="Fraction of dataset used for validation")
@@ -352,6 +370,13 @@ def main():
     ap.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
     ap.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     ap.add_argument("--weight-decay", type=float, default=0.0, help="Optimizer weight decay")
+    ap.add_argument(
+        "--precision",
+        type=str,
+        default="amp",
+        choices=["amp", "float32"],
+        help="Numerical precision mode. AMP is used only on CUDA; float32 disables mixed precision.",
+    )
     ap.add_argument(
         "--loss-function",
         type=str,
@@ -376,6 +401,12 @@ def main():
         ap.error("--train-start-date must be on or before --train-end-date")
     if args.test_start_date > args.test_end_date:
         ap.error("--test-start-date must be on or before --test-end-date")
+    if args.window_stride < 1:
+        ap.error("--window-stride must be >= 1")
+
+    args.use_amp = args.precision == "amp" and device.type == "cuda"
+    if args.precision == "amp" and device.type != "cuda":
+        print(f"AMP requested but unavailable on device '{device.type}'; using float32 instead.")
 
     # Enforce mandatory output folder for metrics and samples
     stamp = datetime.datetime.now().strftime("%Y%m%d")
@@ -398,6 +429,7 @@ def main():
         t_in=args.t_in,               # past frames fed to encoder - x: [T_in,  1, 256, 256]
         t_out=args.t_out,             # future frames to predict   - y: [T_out, 1, 256, 256]
         interval=args.interval,
+        window_stride=args.window_stride,
         cache_root="data/cache",
         cache_only=True,
         start_date=args.train_start_date,
@@ -409,6 +441,7 @@ def main():
         t_in=args.t_in,
         t_out=args.t_out,
         interval=args.interval,
+        window_stride=args.window_stride,
         cache_root="data/cache",
         cache_only=True,
         start_date=args.test_start_date,
@@ -468,15 +501,17 @@ def main():
         lr=args.lr,
         weight_decay=args.weight_decay
     )
+    scaler = torch.cuda.amp.GradScaler(enabled=args.use_amp)
 
     criterion = build_loss(args.loss_function)
 
     print("Beginning training...")
     print(f"Using loss function: {args.loss_function}")
+    print(f"Using precision: {'amp' if args.use_amp else 'float32'}")
     print("Note: higher blur score = sharper image!")
     history = []
     for epoch in range(args.epochs):
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, args, epoch)
+        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, args, epoch, scaler)
         val_stats = evaluate(model, val_loader, criterion, device, args, epoch, stage="Val")
 
         epoch_results = {
