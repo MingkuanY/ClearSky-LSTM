@@ -38,6 +38,10 @@ from loss_functions import (
 # Train/test utils
 import argparse
 import torch
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
 
 if torch.cuda.is_available():
     device = torch.device('cuda')
@@ -93,12 +97,19 @@ def parse_cli_date(value: str) -> datetime.date:
         ) from exc
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device, args):
+def progress_iter(loader, desc: str):
+    if tqdm is None:
+        return loader
+    return tqdm(loader, desc=desc, leave=False)
+
+
+def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch):
     """ Training loop for one epoch """
     model.train()
     total_loss = 0
 
-    for i, (x, y) in enumerate(loader):
+    progress = progress_iter(loader, f"Train {epoch + 1}/{args.epochs}")
+    for i, (x, y) in enumerate(progress):
         x = x.to(device)
         y = y.to(device)
 
@@ -125,11 +136,13 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args):
         optimizer.step()
 
         total_loss += loss.item()
+        if tqdm is not None:
+            progress.set_postfix(loss=f"{(total_loss / (i + 1)):.4f}")
 
 
     return total_loss / len(loader)
 
-def evaluate(model, loader, criterion, device, args, epoch=0):
+def evaluate(model, loader, criterion, device, args, epoch=0, stage="Val"):
     """ Model evaluate loop (no training) """
     model.eval()
     total_loss = 0.0
@@ -150,7 +163,8 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
     fss_keys = []
 
     with torch.no_grad():
-        for i, (x, y) in enumerate(loader):
+        progress = progress_iter(loader, f"{stage} {epoch + 1}/{args.epochs}")
+        for i, (x, y) in enumerate(progress):
             x = x.to(device)
             y = y.to(device)
 
@@ -163,6 +177,8 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
 
             total_loss += loss.item()
             n_batches += 1
+            if tqdm is not None:
+                progress.set_postfix(loss=f"{(total_loss / n_batches):.4f}")
 
             if i == 0:
                 save_comparison(x[0], y[0], pred[0], epoch, i, out_dir=args.sample_dir)
@@ -460,8 +476,8 @@ def main():
     print("Note: higher blur score = sharper image!")
     history = []
     for epoch in range(args.epochs):
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, args)
-        val_stats = evaluate(model, val_loader, criterion, device, args, epoch)
+        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, args, epoch)
+        val_stats = evaluate(model, val_loader, criterion, device, args, epoch, stage="Val")
 
         epoch_results = {
             "epoch": epoch + 1,
@@ -487,7 +503,7 @@ def main():
 
     # ------------ 5. Evaluate model ------------
     print("Evaluating model...")
-    test_stats = evaluate(model, test_loader, criterion, device, args)
+    test_stats = evaluate(model, test_loader, criterion, device, args, epoch=args.epochs - 1, stage="Test")
 
     with open(os.path.join(args.results_dir, "test_metrics.json"), "w") as f:
         json.dump({"test": test_stats}, f, indent=2)
