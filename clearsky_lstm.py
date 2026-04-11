@@ -187,18 +187,20 @@ def evaluate(model, loader, criterion, device, args, epoch=0, stage="Val"):
 
                 loss = criterion(pred, y)
 
+            pred_eval = pred.clamp(0.0, 1.0)
+
             total_loss += loss.item()
             n_batches += 1
             if tqdm is not None:
                 progress.set_postfix(loss=f"{(total_loss / n_batches):.4f}")
 
             if i == 0:
-                save_comparison(x[0], y[0], pred[0], epoch, i, out_dir=args.sample_dir)
-                save_preds_only(pred[0], epoch, i, out_dir=os.path.join(args.sample_dir, "preds"))
+                save_comparison(x[0], y[0], pred_eval[0], epoch, i, out_dir=args.sample_dir)
+                save_preds_only(pred_eval[0], epoch, i, out_dir=os.path.join(args.sample_dir, "preds"))
 
-            total_blur += compute_blur_score(pred[0])
+            total_blur += compute_blur_score(pred_eval[0])
 
-            r_metrics = regression_metrics(pred, y)
+            r_metrics = regression_metrics(pred_eval, y)
             stats["mae"] += r_metrics["mae"]
             stats["mse"] += r_metrics["mse"]
             stats["rmse"] += r_metrics["rmse"]
@@ -209,14 +211,14 @@ def evaluate(model, loader, criterion, device, args, epoch=0, stage="Val"):
                 else:
                     per_lead[k] += r_metrics[k]
 
-            cont_metrics = contingency_metrics(pred, y)
+            cont_metrics = contingency_metrics(pred_eval, y)
             for key in threshold_keys:
                 if per_lead[key] is None:
                     per_lead[key] = cont_metrics[key].clone()
                 else:
                     per_lead[key] += cont_metrics[key]
 
-            fss_metrics = fractions_skill_score(pred, y)
+            fss_metrics = fractions_skill_score(pred_eval, y)
             for key, value in fss_metrics.items():
                 if key not in fss_keys:
                     fss_keys.append(key)
@@ -225,7 +227,7 @@ def evaluate(model, loader, criterion, device, args, epoch=0, stage="Val"):
                 else:
                     per_lead[key] += value
 
-            rapsd = rapsd_distance(pred, y)
+            rapsd = rapsd_distance(pred_eval, y)
             stats["RAPSD_dist"] += rapsd["RAPSD_dist"]
             if per_lead.get("RAPSD_dist_lead") is None:
                 per_lead["RAPSD_dist_lead"] = rapsd["RAPSD_dist_lead"].clone()
