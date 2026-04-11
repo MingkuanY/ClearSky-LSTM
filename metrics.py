@@ -24,7 +24,7 @@ def _as_bt_hw(x: torch.Tensor) -> torch.Tensor:
 
 def _valid_mask(target_dbz: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
     if mask is None:
-        mask = target_dbz > DBZ_MIN
+        mask = torch.ones_like(target_dbz, dtype=torch.bool)
     else:
         mask = mask.bool()
     return mask
