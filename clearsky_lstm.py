@@ -463,7 +463,7 @@ def main():
 
     # ------------ 4. Train selected model ------------
     model = model.to(device)
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
         weight_decay=args.weight_decay
