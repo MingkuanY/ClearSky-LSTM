@@ -501,9 +501,9 @@ def main():
         lr=args.lr,
         weight_decay=args.weight_decay
     )
-    scaler = torch.cuda.amp.GradScaler(enabled=args.use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=args.use_amp)
 
-    criterion = build_loss(args.loss_function)
+    criterion = build_loss(args.loss_function).to(device)
 
     print("Beginning training...")
     print(f"Using loss function: {args.loss_function}")
