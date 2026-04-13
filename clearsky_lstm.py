@@ -28,10 +28,20 @@ from metrics import (
     fractions_skill_score,
     rapsd_distance,
 )
+from loss_functions import (
+    ReflectivityBMSELoss,
+    ReflectivityBMAELoss,
+    ReflectivityBalancedLoss,
+    SSIMLoss,
+)
 
 # Train/test utils
 import argparse
 import torch
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
 
 if torch.cuda.is_available():
     device = torch.device('cuda')
@@ -41,43 +51,109 @@ else:
     device = torch.device('cpu')
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device, args):
+LOSS_FUNCTIONS = {
+    "l1": torch.nn.L1Loss,
+    "l2": torch.nn.MSELoss,
+    "reflectivity_bmse": ReflectivityBMSELoss,
+    "reflectivity_bmae": ReflectivityBMAELoss,
+    "reflectivity_balanced": ReflectivityBalancedLoss,
+    "ssim": SSIMLoss,
+}
+
+
+class FramewiseLossAdapter(torch.nn.Module):
+    """Apply 2D image losses framewise on [B, T, C, H, W] tensors."""
+
+    def __init__(self, base_loss: torch.nn.Module):
+        super().__init__()
+        self.base_loss = base_loss
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if pred.shape != target.shape:
+            raise ValueError(
+                f"Prediction and target must have the same shape, got {tuple(pred.shape)} and {tuple(target.shape)}"
+            )
+
+        if pred.ndim == 5:
+            b, t, c, h, w = pred.shape
+            pred = pred.reshape(b * t, c, h, w)
+            target = target.reshape(b * t, c, h, w)
+
+        return self.base_loss(pred, target)
+
+
+def build_loss(loss_name: str) -> torch.nn.Module:
+    if loss_name == "ssim":
+        return FramewiseLossAdapter(SSIMLoss())
+    return LOSS_FUNCTIONS[loss_name]()
+
+
+def parse_cli_date(value: str) -> datetime.date:
+    try:
+        return datetime.datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Invalid date '{value}'. Expected format: YYYY-MM-DD"
+        ) from exc
+
+
+def progress_iter(loader, desc: str):
+    if tqdm is None:
+        return loader
+    return tqdm(loader, desc=desc, leave=False)
+
+
+def autocast_context(args, device):
+    return torch.autocast(device_type=device.type, enabled=args.use_amp)
+
+
+def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch, scaler):
     """ Training loop for one epoch """
     model.train()
     total_loss = 0
 
-    for i, (x, y) in enumerate(loader):
+    progress = progress_iter(loader, f"Train {epoch + 1}/{args.epochs}")
+    for i, (x, y) in enumerate(progress):
         x = x.to(device)
         y = y.to(device)
 
         optimizer.zero_grad()
 
-        if args.model in {"base_network", "base_network_cand"}:
-            pred = model(
-                x,
-                t_out=y.shape[1],
-                teacher_forcing=args.teacher_forcing,
-                y=y
-            )
-        else:
-            pred = model(x)
+        with autocast_context(args, device):
+            if args.model in {"base_network", "base_network_cand"}:
+                pred = model(
+                    x,
+                    t_out=y.shape[1],
+                    teacher_forcing=args.teacher_forcing,
+                    y=y
+                )
+            else:
+                pred = model(x)
 
-        # These print statements are for testing purposes only
-        # They print range of predicted values vs range of ground truth values
-        if i == 0:
-            print(f"Input Range: {x.min().item():.4f} to {x.max().item():.4f}")
-            print(f"Pred Range: {pred.min().item():.4f} to {pred.max().item():.4f}")
-            print(f"Target Range: {y.min().item():.4f} to {y.max().item():.4f}")
-        loss = criterion(pred, y)
-        loss.backward()
-        optimizer.step()
+            # These print statements are for testing purposes only
+            # They print range of predicted values vs range of ground truth values
+            if i == 0:
+                print(f"Input Range: {x.min().item():.4f} to {x.max().item():.4f}")
+                print(f"Pred Range: {pred.min().item():.4f} to {pred.max().item():.4f}")
+                print(f"Target Range: {y.min().item():.4f} to {y.max().item():.4f}")
+            loss = criterion(pred, y)
+
+        if args.use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         total_loss += loss.item()
+        if tqdm is not None:
+            progress.set_postfix(loss=f"{(total_loss / (i + 1)):.4f}")
 
 
     return total_loss / len(loader)
 
-def evaluate(model, loader, criterion, device, args, epoch=0):
+def evaluate(model, loader, criterion, device, args, epoch=0, stage="Val"):
     """ Model evaluate loop (no training) """
     model.eval()
     total_loss = 0.0
@@ -98,27 +174,33 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
     fss_keys = []
 
     with torch.no_grad():
-        for i, (x, y) in enumerate(loader):
+        progress = progress_iter(loader, f"{stage} {epoch + 1}/{args.epochs}")
+        for i, (x, y) in enumerate(progress):
             x = x.to(device)
             y = y.to(device)
 
-            if args.model in {"base_network", "base_network_cand"}:
-                pred = model(x, t_out=y.shape[1])
-            else:
-                pred = model(x)
+            with autocast_context(args, device):
+                if args.model in {"base_network", "base_network_cand"}:
+                    pred = model(x, t_out=y.shape[1])
+                else:
+                    pred = model(x)
 
-            loss = criterion(pred, y)
+                loss = criterion(pred, y)
+
+            pred_eval = pred.clamp(0.0, 1.0)
 
             total_loss += loss.item()
             n_batches += 1
+            if tqdm is not None:
+                progress.set_postfix(loss=f"{(total_loss / n_batches):.4f}")
 
             if i == 0:
-                save_comparison(x[0], y[0], pred[0], epoch, i, out_dir=args.sample_dir)
-                save_preds_only(pred[0], epoch, i, out_dir=os.path.join(args.sample_dir, "preds"))
+                save_comparison(x[0], y[0], pred_eval[0], epoch, i, out_dir=args.sample_dir)
+                save_preds_only(pred_eval[0], epoch, i, out_dir=os.path.join(args.sample_dir, "preds"))
 
-            total_blur += compute_blur_score(pred[0])
+            total_blur += compute_blur_score(pred_eval[0])
 
-            r_metrics = regression_metrics(pred, y)
+            r_metrics = regression_metrics(pred_eval, y)
             stats["mae"] += r_metrics["mae"]
             stats["mse"] += r_metrics["mse"]
             stats["rmse"] += r_metrics["rmse"]
@@ -129,14 +211,14 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
                 else:
                     per_lead[k] += r_metrics[k]
 
-            cont_metrics = contingency_metrics(pred, y)
+            cont_metrics = contingency_metrics(pred_eval, y)
             for key in threshold_keys:
                 if per_lead[key] is None:
                     per_lead[key] = cont_metrics[key].clone()
                 else:
                     per_lead[key] += cont_metrics[key]
 
-            fss_metrics = fractions_skill_score(pred, y)
+            fss_metrics = fractions_skill_score(pred_eval, y)
             for key, value in fss_metrics.items():
                 if key not in fss_keys:
                     fss_keys.append(key)
@@ -145,7 +227,7 @@ def evaluate(model, loader, criterion, device, args, epoch=0):
                 else:
                     per_lead[key] += value
 
-            rapsd = rapsd_distance(pred, y)
+            rapsd = rapsd_distance(pred_eval, y)
             stats["RAPSD_dist"] += rapsd["RAPSD_dist"]
             if per_lead.get("RAPSD_dist_lead") is None:
                 per_lead["RAPSD_dist_lead"] = rapsd["RAPSD_dist_lead"].clone()
@@ -268,10 +350,19 @@ def main():
         default=0,
         help="Number of frames to skip between successive frames in each sample",
     )
+    ap.add_argument(
+        "--window-stride",
+        type=int,
+        default=1,
+        help="Stride between consecutive sliding-window sample start indices",
+    )
 
     # Train/test/val splits
     ap.add_argument("--val-frac", type=float, default=0.1, help="Fraction of dataset used for validation")
-    ap.add_argument("--test-frac", type=float, default=0.1, help="Fraction of dataset used for testing")
+    ap.add_argument("--train-start-date", type=parse_cli_date, required=True, help="Inclusive training start date (YYYY-MM-DD)")
+    ap.add_argument("--train-end-date", type=parse_cli_date, required=True, help="Inclusive training end date (YYYY-MM-DD)")
+    ap.add_argument("--test-start-date", type=parse_cli_date, required=True, help="Inclusive test start date (YYYY-MM-DD)")
+    ap.add_argument("--test-end-date", type=parse_cli_date, required=True, help="Inclusive test end date (YYYY-MM-DD)")
 
     # Data loading params
     ap.add_argument("--batch-size", type=int, default=8, help="Training batch size")
@@ -281,6 +372,20 @@ def main():
     ap.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
     ap.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     ap.add_argument("--weight-decay", type=float, default=0.0, help="Optimizer weight decay")
+    ap.add_argument(
+        "--precision",
+        type=str,
+        default="amp",
+        choices=["amp", "float32"],
+        help="Numerical precision mode. AMP is used only on CUDA; float32 disables mixed precision.",
+    )
+    ap.add_argument(
+        "--loss-function",
+        type=str,
+        default="l1",
+        choices=sorted(LOSS_FUNCTIONS.keys()),
+        help="Loss function to use for training and evaluation",
+    )
 
     # ConvLSTM architecture
     ap.add_argument("--hidden-ch", type=int, nargs="+", default=[64,64,64], help="Number of ConvLSTM hidden channels")
@@ -294,10 +399,21 @@ def main():
     print("Starting model...")
     args = ap.parse_args()
 
+    if args.train_start_date > args.train_end_date:
+        ap.error("--train-start-date must be on or before --train-end-date")
+    if args.test_start_date > args.test_end_date:
+        ap.error("--test-start-date must be on or before --test-end-date")
+    if args.window_stride < 1:
+        ap.error("--window-stride must be >= 1")
+
+    args.use_amp = args.precision == "amp" and device.type == "cuda"
+    if args.precision == "amp" and device.type != "cuda":
+        print(f"AMP requested but unavailable on device '{device.type}'; using float32 instead.")
+
     # Enforce mandatory output folder for metrics and samples
     stamp = datetime.datetime.now().strftime("%Y%m%d")
     random_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    subpath = os.path.join(stamp, args.model, random_id)
+    subpath = os.path.join(stamp, args.model, args.loss_function, random_id)
 
     args.sample_dir = os.path.join("samples", subpath)
     args.results_dir = os.path.join("results", subpath)
@@ -309,25 +425,43 @@ def main():
 
     # ---------------- 2. Data loading ----------------
     print("Building dataset...")
-    ds = NEXRADDataset(
+    train_val_ds = NEXRADDataset(
         raw_root="data/raw",
         stations=args.stations,
         t_in=args.t_in,               # past frames fed to encoder - x: [T_in,  1, 256, 256]
         t_out=args.t_out,             # future frames to predict   - y: [T_out, 1, 256, 256]
         interval=args.interval,
+        window_stride=args.window_stride,
         cache_root="data/cache",
         cache_only=True,
+        start_date=args.train_start_date,
+        end_date=args.train_end_date,
+    )
+    test_ds = NEXRADDataset(
+        raw_root="data/raw",
+        stations=args.stations,
+        t_in=args.t_in,
+        t_out=args.t_out,
+        interval=args.interval,
+        window_stride=args.window_stride,
+        cache_root="data/cache",
+        cache_only=True,
+        start_date=args.test_start_date,
+        end_date=args.test_end_date,
     )
 
-    # Split data into train/val/test sets
-    n = len(ds)
+    # Split training-range data into train/val, and keep test-range data isolated.
+    n = len(train_val_ds)
     n_val = int(args.val_frac * n)
-    n_test = int(args.test_frac * n)
-    n_train = n - n_val - n_test
+    n_train = n - n_val
+    if n_train <= 0:
+        raise ValueError(
+            f"Training date range produced {n} samples, which is too small for val_frac={args.val_frac}."
+        )
     print("Train/val/test split complete!")
 
     torch.manual_seed(args.seed)
-    train_ds, val_ds, test_ds = random_split(ds, [n_train, n_val, n_test])
+    train_ds, val_ds = random_split(train_val_ds, [n_train, n_val])
 
     train_loader = DataLoader(
         train_ds,
@@ -364,20 +498,23 @@ def main():
 
     # ------------ 4. Train selected model ------------
     model = model.to(device)
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
         weight_decay=args.weight_decay
     )
+    scaler = torch.amp.GradScaler("cuda", enabled=args.use_amp)
 
-    criterion = torch.nn.L1Loss()
+    criterion = build_loss(args.loss_function).to(device)
 
     print("Beginning training...")
+    print(f"Using loss function: {args.loss_function}")
+    print(f"Using precision: {'amp' if args.use_amp else 'float32'}")
     print("Note: higher blur score = sharper image!")
     history = []
     for epoch in range(args.epochs):
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, args)
-        val_stats = evaluate(model, val_loader, criterion, device, args, epoch)
+        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, args, epoch, scaler)
+        val_stats = evaluate(model, val_loader, criterion, device, args, epoch, stage="Val")
 
         epoch_results = {
             "epoch": epoch + 1,
@@ -403,7 +540,7 @@ def main():
 
     # ------------ 5. Evaluate model ------------
     print("Evaluating model...")
-    test_stats = evaluate(model, test_loader, criterion, device, args)
+    test_stats = evaluate(model, test_loader, criterion, device, args, epoch=args.epochs - 1, stage="Test")
 
     with open(os.path.join(args.results_dir, "test_metrics.json"), "w") as f:
         json.dump({"test": test_stats}, f, indent=2)

@@ -16,7 +16,9 @@ Dataset
 """
 
 import os
+import sys
 import warnings
+from datetime import date
 from pathlib import Path
 from typing import Sequence
 
@@ -109,6 +111,37 @@ def _cache_path_for(raw_path: Path, raw_root: Path, cache_root: Path) -> Path:
     """Derive the .npy cache path corresponding to a raw scan path."""
     rel = raw_path.relative_to(raw_root)
     return cache_root / rel.parent / (rel.name + ".npy")
+
+
+def _scan_date_from_path(path: Path) -> date:
+    """Extract YYYY/MM/DD from cached or raw scan paths."""
+    parts = path.parts
+    for i in range(len(parts) - 3):
+        year, month, day = parts[i], parts[i + 1], parts[i + 2]
+        if len(year) == 4 and year.isdigit() and len(month) == 2 and month.isdigit() and len(day) == 2 and day.isdigit():
+            return date(int(year), int(month), int(day))
+    raise ValueError(f"Could not extract scan date from path: {path}")
+
+
+def _filter_paths_by_date_range(
+    paths: list[Path],
+    start_date: date | None,
+    end_date: date | None,
+) -> list[Path]:
+    if start_date is None and end_date is None:
+        return paths
+
+    filtered: list[Path] = []
+    for path in paths:
+        scan_date = _scan_date_from_path(path)
+        if start_date is not None and scan_date < start_date:
+            continue
+        if end_date is not None and scan_date > end_date:
+            continue
+        filtered.append(path)
+    return filtered
+
+
 class NEXRADDataset(Dataset):
     """Sliding-window sequence dataset over one or more NEXRAD stations.
 
@@ -120,6 +153,8 @@ class NEXRADDataset(Dataset):
     interval    : Number of frames to skip between successive frames inside a
                   sample. `0` means consecutive frames, `1` means every other
                   frame, etc.
+    window_stride: Number of start indices to skip between consecutive samples.
+                  `1` keeps every window, `5` keeps every 5th window, etc.
     cache_root  : If provided, load pre-computed .npy grids from here instead
                   of running pyart on every __getitem__ call.
                   Run cache_nexrad.py once to populate this directory.
@@ -139,14 +174,21 @@ class NEXRADDataset(Dataset):
         t_in: int = 6,
         t_out: int = 6,
         interval: int = 0,
+        window_stride: int = 1,
         cache_root: str | os.PathLike | None = None,
         cache_only: bool = False,
+        start_date: date | None = None,
+        end_date: date | None = None,
         grid_shape: tuple[int, int] = GRID_SHAPE,
         grid_radius: float = GRID_RADIUS,
         transform=None,
     ):
         if interval < 0:
             raise ValueError("interval must be >= 0.")
+        if window_stride <= 0:
+            raise ValueError("window_stride must be >= 1.")
+        if start_date is not None and end_date is not None and start_date > end_date:
+            raise ValueError("start_date must be <= end_date.")
 
         self.t_in = t_in
         self.t_out = t_out
@@ -154,6 +196,7 @@ class NEXRADDataset(Dataset):
         self.interval = interval
         self.frame_step = interval + 1
         self.window_span = (self.window - 1) * self.frame_step + 1
+        self.window_stride = window_stride
         self.raw_root   = Path(raw_root)
         self.cache_root = Path(cache_root) if cache_root else None
         self.cache_only = cache_only or (
@@ -172,6 +215,7 @@ class NEXRADDataset(Dataset):
                 paths = _sorted_cache_paths(self.cache_root, station)
             else:
                 paths = _sorted_scan_paths(self.raw_root, station)
+            paths = _filter_paths_by_date_range(paths, start_date, end_date)
             n = len(paths)
             if n == 0:
                 root = self.cache_root if self.cache_only else self.raw_root
@@ -189,7 +233,7 @@ class NEXRADDataset(Dataset):
                     f"t_out={self.t_out}, interval={self.interval}); skipping."
                 )
                 continue
-            for start in range(n - self.window_span + 1):
+            for start in range(0, n - self.window_span + 1, self.window_stride):
                 self._windows.append((paths, start))
 
         if not self._windows:
@@ -201,13 +245,21 @@ class NEXRADDataset(Dataset):
     def _load_frame(self, path: Path) -> np.ndarray:
         """Return a (H, W) float32 array in dBZ, using cache when available."""
         if self.cache_only:
-            return np.load(str(path))
+            try:
+                return np.load(str(path))
+            except Exception as exc:
+                print(f"Failed to load cached frame: {path}", file=sys.stderr, flush=True)
+                raise RuntimeError(f"Failed to load cached frame: {path}") from exc
 
         raw_path = path
         if self.cache_root is not None:
             cache_path = _cache_path_for(raw_path, self.raw_root, self.cache_root)
             if cache_path.exists():
-                return np.load(str(cache_path))
+                try:
+                    return np.load(str(cache_path))
+                except Exception as exc:
+                    print(f"Failed to load cached frame: {cache_path}", file=sys.stderr, flush=True)
+                    raise RuntimeError(f"Failed to load cached frame: {cache_path}") from exc
         return parse_nexrad_file(raw_path, self.grid_shape, self.grid_radius)
 
     def __len__(self) -> int:
@@ -221,10 +273,18 @@ class NEXRADDataset(Dataset):
         ]
 
         frames: list[torch.Tensor] = []
-        for p in window_paths:
-            ref  = self._load_frame(p)
-            norm = normalize(ref)
-            frames.append(torch.from_numpy(norm).unsqueeze(0))  # (1, H, W)
+        try:
+            for p in window_paths:
+                ref  = self._load_frame(p)
+                norm = normalize(ref)
+                frames.append(torch.from_numpy(norm).unsqueeze(0))  # (1, H, W)
+        except Exception as exc:
+            print(f"Failed sample window at dataset index {idx}", file=sys.stderr, flush=True)
+            for p in window_paths:
+                print(f"  window frame: {p}", file=sys.stderr, flush=True)
+            raise RuntimeError(
+                f"Failed to build sample window at dataset index {idx}. See logged frame paths above."
+            ) from exc
 
         x = torch.stack(frames[: self.t_in])   # [T_in,  1, H, W]
         y = torch.stack(frames[self.t_in :])   # [T_out, 1, H, W]
