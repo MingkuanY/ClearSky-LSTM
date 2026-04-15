@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import argparse
 import hashlib
 import itertools
@@ -95,6 +97,7 @@ def build_case(model, loss_function, interval, lr):
 def build_command(params, run_stamp, skip_if_complete):
     cmd = [
         sys.executable,
+        "-u",
         "clearsky_lstm.py",
         "--loss-function",
         params["loss_function"],
@@ -151,6 +154,12 @@ def iter_cases():
 
 
 def main():
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except AttributeError:
+        pass
+
     parser = argparse.ArgumentParser(description="Run the ClearSky LSTM experiment grid.")
     parser.add_argument(
         "--run-stamp",
@@ -179,15 +188,16 @@ def main():
         )
         test_metrics_path = os.path.join(results_dir, "test_metrics.json")
         if not args.no_skip and os.path.exists(test_metrics_path):
-            print(f"[{offset}/{total}] skip complete: {test_metrics_path}")
+            print(f"[{offset}/{total}] skip complete: {test_metrics_path}", flush=True)
             continue
 
         cmd = build_command(params, args.run_stamp, skip_if_complete=not args.no_skip)
-        print(f"[{offset}/{total}] running {params['model']} {params['loss_function']} interval={params['interval']} lr={params['lr']}")
-        print(" ".join(cmd))
+        print(f"[{offset}/{total}] running {params['model']} {params['loss_function']} interval={params['interval']} lr={params['lr']}", flush=True)
+        print(" ".join(cmd), flush=True)
         if args.dry_run:
             continue
-        subprocess.run(cmd, check=True)
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        subprocess.run(cmd, check=True, env=env)
 
 
 if __name__ == "__main__":
