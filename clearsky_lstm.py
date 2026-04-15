@@ -11,12 +11,11 @@ from torch.utils.data import random_split
 # Data visualization
 from collections import defaultdict
 import datetime
+import hashlib
 import json
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-import random
-import string
 import sys
 
 # Blur metric
@@ -183,6 +182,35 @@ def save_run_settings(args, run_id, stamp, subpath):
     with open(settings_path, "w") as f:
         json.dump(settings, f, indent=2)
     print(f"Saved run settings to {settings_path}")
+
+
+def deterministic_run_id(args):
+    run_params = {
+        "model": args.model,
+        "loss_function": args.loss_function,
+        "stations": args.stations,
+        "t_in": args.t_in,
+        "t_out": args.t_out,
+        "interval": args.interval,
+        "window_stride": args.window_stride,
+        "val_frac": args.val_frac,
+        "train_start_date": json_safe_value(args.train_start_date),
+        "train_end_date": json_safe_value(args.train_end_date),
+        "test_start_date": json_safe_value(args.test_start_date),
+        "test_end_date": json_safe_value(args.test_end_date),
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
+        "epochs": args.epochs,
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "precision": args.precision,
+        "hidden_ch": args.hidden_ch,
+        "num_layers": args.num_layers,
+        "teacher_forcing": args.teacher_forcing,
+        "seed": args.seed,
+    }
+    encoded = json.dumps(run_params, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(encoded.encode("utf-8")).hexdigest()[:10]
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch, scaler):
@@ -472,6 +500,9 @@ def main():
 
     # Visualization/outdirs/reproducibility
     ap.add_argument("--model-out", type=str, default="checkpoints/final_model.pt", help="Path to save final model parameters")
+    ap.add_argument("--run-id", type=str, default=None, help="Optional explicit run ID. Defaults to a deterministic ID from run parameters.")
+    ap.add_argument("--run-stamp", type=str, default=None, help="Optional top-level run folder name. Defaults to today's YYYYMMDD stamp.")
+    ap.add_argument("--skip-if-complete", action="store_true", help="Exit without training when test_metrics.json already exists for this run.")
     ap.add_argument("--seed", type=int, default=13, help="Random seed")
 
     print("Starting model...")
@@ -483,14 +514,18 @@ def main():
         ap.error("--test-start-date must be on or before --test-end-date")
     if args.window_stride < 1:
         ap.error("--window-stride must be >= 1")
+    if args.run_id is not None and any(sep in args.run_id for sep in (os.sep, os.altsep) if sep):
+        ap.error("--run-id must be a single path component")
+    if args.run_stamp is not None and any(sep in args.run_stamp for sep in (os.sep, os.altsep) if sep):
+        ap.error("--run-stamp must be a single path component")
 
     args.use_amp = args.precision == "amp" and device.type == "cuda"
     if args.precision == "amp" and device.type != "cuda":
         print(f"AMP requested but unavailable on device '{device.type}'; using float32 instead.")
 
     # Enforce mandatory output folder for metrics and samples
-    stamp = datetime.datetime.now().strftime("%Y%m%d")
-    run_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    stamp = args.run_stamp or datetime.datetime.now().strftime("%Y%m%d")
+    run_id = args.run_id or deterministic_run_id(args)
     subpath = os.path.join(stamp, args.model, args.loss_function, run_id)
 
     args.sample_dir = os.path.join("samples", subpath)
@@ -498,6 +533,9 @@ def main():
 
     os.makedirs(args.sample_dir, exist_ok=True)
     os.makedirs(args.results_dir, exist_ok=True)
+    if args.skip_if_complete and os.path.exists(os.path.join(args.results_dir, "test_metrics.json")):
+        print(f"Skipping completed run: {args.results_dir}")
+        return
     save_run_settings(args, run_id, stamp, subpath)
 
     print(f"Arguments parsed! sample_dir={args.sample_dir} results_dir={args.results_dir}")
