@@ -17,6 +17,7 @@ import numpy as np
 import os
 import random
 import string
+import sys
 
 # Blur metric
 import cv2
@@ -105,6 +106,83 @@ def progress_iter(loader, desc: str):
 
 def autocast_context(args, device):
     return torch.autocast(device_type=device.type, enabled=args.use_amp)
+
+
+def json_safe_value(value):
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return value.isoformat()
+    if isinstance(value, torch.device):
+        return str(value)
+    if isinstance(value, tuple):
+        return [json_safe_value(item) for item in value]
+    if isinstance(value, list):
+        return [json_safe_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: json_safe_value(item) for key, item in value.items()}
+    return value
+
+
+def save_run_settings(args, run_id, stamp, subpath):
+    settings = {
+        "run_id": run_id,
+        "date_stamp": stamp,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "command": " ".join(sys.argv),
+        "paths": {
+            "subpath": subpath,
+            "sample_dir": args.sample_dir,
+            "results_dir": args.results_dir,
+            "model_out": args.model_out,
+        },
+        "runtime": {
+            "device": str(device),
+            "precision_requested": args.precision,
+            "use_amp": args.use_amp,
+        },
+        "parameters": {
+            key: json_safe_value(value)
+            for key, value in vars(args).items()
+        },
+        "model": {
+            "name": args.model,
+            "hidden_ch": args.hidden_ch,
+            "num_layers": args.num_layers,
+            "t_in": args.t_in,
+            "t_out": args.t_out,
+        },
+        "training": {
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "learning_rate": args.lr,
+            "weight_decay": args.weight_decay,
+            "loss_function": args.loss_function,
+            "teacher_forcing": args.teacher_forcing,
+            "optimizer": "AdamW",
+            "seed": args.seed,
+        },
+        "data": {
+            "raw_root": "data/raw",
+            "cache_root": "data/cache",
+            "cache_only": True,
+            "stations": args.stations,
+            "train_start_date": json_safe_value(args.train_start_date),
+            "train_end_date": json_safe_value(args.train_end_date),
+            "test_start_date": json_safe_value(args.test_start_date),
+            "test_end_date": json_safe_value(args.test_end_date),
+            "val_frac": args.val_frac,
+            "batch_size": args.batch_size,
+            "num_workers": args.num_workers,
+            "t_in": args.t_in,
+            "t_out": args.t_out,
+            "interval": args.interval,
+            "window_stride": args.window_stride,
+        },
+    }
+
+    settings_path = os.path.join(args.results_dir, "settings.json")
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+    print(f"Saved run settings to {settings_path}")
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch, scaler):
@@ -412,14 +490,15 @@ def main():
 
     # Enforce mandatory output folder for metrics and samples
     stamp = datetime.datetime.now().strftime("%Y%m%d")
-    random_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    subpath = os.path.join(stamp, args.model, args.loss_function, random_id)
+    run_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    subpath = os.path.join(stamp, args.model, args.loss_function, run_id)
 
     args.sample_dir = os.path.join("samples", subpath)
     args.results_dir = os.path.join("results", subpath)
 
     os.makedirs(args.sample_dir, exist_ok=True)
     os.makedirs(args.results_dir, exist_ok=True)
+    save_run_settings(args, run_id, stamp, subpath)
 
     print(f"Arguments parsed! sample_dir={args.sample_dir} results_dir={args.results_dir}")
 
