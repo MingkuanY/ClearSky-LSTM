@@ -1,3 +1,5 @@
+#!python3
+
 import argparse
 import hashlib
 import itertools
