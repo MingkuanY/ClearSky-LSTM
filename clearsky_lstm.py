@@ -97,8 +97,8 @@ def parse_cli_date(value: str) -> datetime.date:
         ) from exc
 
 
-def progress_iter(loader, desc: str):
-    if tqdm is None:
+def progress_iter(loader, desc: str, enabled: bool = True):
+    if tqdm is None or not enabled:
         return loader
     return tqdm(loader, desc=desc, leave=False)
 
@@ -218,7 +218,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch, sc
     model.train()
     total_loss = 0
 
-    progress = progress_iter(loader, f"Train {epoch + 1}/{args.epochs}")
+    progress = progress_iter(loader, f"Train {epoch + 1}/{args.epochs}", enabled=not args.no_tqdm)
     for i, (x, y) in enumerate(progress):
         x = x.to(device)
         y = y.to(device)
@@ -253,7 +253,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch, sc
             optimizer.step()
 
         total_loss += loss.item()
-        if tqdm is not None:
+        if tqdm is not None and not args.no_tqdm:
             progress.set_postfix(loss=f"{(total_loss / (i + 1)):.4f}")
 
 
@@ -280,7 +280,7 @@ def evaluate(model, loader, criterion, device, args, epoch=0, stage="Val"):
     fss_keys = []
 
     with torch.no_grad():
-        progress = progress_iter(loader, f"{stage} {epoch + 1}/{args.epochs}")
+        progress = progress_iter(loader, f"{stage} {epoch + 1}/{args.epochs}", enabled=not args.no_tqdm)
         for i, (x, y) in enumerate(progress):
             x = x.to(device)
             y = y.to(device)
@@ -297,7 +297,7 @@ def evaluate(model, loader, criterion, device, args, epoch=0, stage="Val"):
 
             total_loss += loss.item()
             n_batches += 1
-            if tqdm is not None:
+            if tqdm is not None and not args.no_tqdm:
                 progress.set_postfix(loss=f"{(total_loss / n_batches):.4f}")
 
             if i == 0:
@@ -491,6 +491,11 @@ def main():
         default="l1",
         choices=sorted(LOSS_FUNCTIONS.keys()),
         help="Loss function to use for training and evaluation",
+    )
+    ap.add_argument(
+        "--no-tqdm",
+        action="store_true",
+        help="Disable tqdm progress bars and keep only epoch-level logging.",
     )
 
     # ConvLSTM architecture

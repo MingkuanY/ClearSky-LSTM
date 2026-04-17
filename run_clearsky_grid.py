@@ -94,7 +94,7 @@ def build_case(model, loss_function, interval, lr):
     return params
 
 
-def build_command(params, run_stamp, skip_if_complete):
+def build_command(params, run_stamp, skip_if_complete, no_tqdm):
     cmd = [
         sys.executable,
         "-u",
@@ -143,6 +143,8 @@ def build_command(params, run_stamp, skip_if_complete):
         cmd.extend(["--num-layers", str(params["num_layers"])])
     if skip_if_complete:
         cmd.append("--skip-if-complete")
+    if no_tqdm:
+        cmd.append("--no-tqdm")
     return cmd
 
 
@@ -168,6 +170,7 @@ def main():
     )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running them.")
     parser.add_argument("--no-skip", action="store_true", help="Run cases even when test_metrics.json already exists.")
+    parser.add_argument("--no-tqdm", action="store_true", help="Disable per-batch tqdm output in training jobs.")
     parser.add_argument("--start-at", type=int, default=1, help="1-based case index to start from.")
     parser.add_argument("--limit", type=int, default=None, help="Maximum number of cases to consider.")
     args = parser.parse_args()
@@ -191,7 +194,12 @@ def main():
             print(f"[{offset}/{total}] skip complete: {test_metrics_path}", flush=True)
             continue
 
-        cmd = build_command(params, args.run_stamp, skip_if_complete=not args.no_skip)
+        cmd = build_command(
+            params,
+            args.run_stamp,
+            skip_if_complete=not args.no_skip,
+            no_tqdm=args.no_tqdm,
+        )
         print(f"[{offset}/{total}] running {params['model']} {params['loss_function']} interval={params['interval']} lr={params['lr']}", flush=True)
         print(" ".join(cmd), flush=True)
         if args.dry_run:
