@@ -1,0 +1,93 @@
+{
+  "run_id": "560d3ac3a2",
+  "date_stamp": "grid",
+  "created_at": "2026-04-19T21:23:22",
+  "command": "clearsky_lstm.py --loss-function ssim --model-out checkpoints/base_network_cand_ssim_int11_lr0p001_tin5_tout5.pt --model base_network_cand --stations KAMX --t-in 5 --t-out 5 --batch-size 16 --epochs 20 --lr 0.001 --interval 11 --window-stride 5 --precision amp --train-start-date 2024-04-01 --train-end-date 2024-10-31 --test-start-date 2025-04-01 --test-end-date 2025-10-31 --seed 13 --run-stamp grid --run-id 560d3ac3a2 --hidden-ch 32 32 --num-layers 2 --skip-if-complete --no-tqdm",
+  "paths": {
+    "subpath": "grid/base_network_cand/ssim/560d3ac3a2",
+    "sample_dir": "samples/grid/base_network_cand/ssim/560d3ac3a2",
+    "results_dir": "results/grid/base_network_cand/ssim/560d3ac3a2",
+    "model_out": "checkpoints/base_network_cand_ssim_int11_lr0p001_tin5_tout5.pt"
+  },
+  "runtime": {
+    "device": "cuda",
+    "precision_requested": "amp",
+    "use_amp": true
+  },
+  "parameters": {
+    "model": "base_network_cand",
+    "stations": [
+      "KAMX"
+    ],
+    "t_in": 5,
+    "t_out": 5,
+    "interval": 11,
+    "window_stride": 5,
+    "val_frac": 0.1,
+    "train_start_date": "2024-04-01",
+    "train_end_date": "2024-10-31",
+    "test_start_date": "2025-04-01",
+    "test_end_date": "2025-10-31",
+    "batch_size": 16,
+    "num_workers": 4,
+    "epochs": 20,
+    "lr": 0.001,
+    "weight_decay": 0.0,
+    "precision": "amp",
+    "loss_function": "ssim",
+    "no_tqdm": true,
+    "hidden_ch": [
+      32,
+      32
+    ],
+    "num_layers": 2,
+    "teacher_forcing": 0,
+    "model_out": "checkpoints/base_network_cand_ssim_int11_lr0p001_tin5_tout5.pt",
+    "run_id": "560d3ac3a2",
+    "run_stamp": "grid",
+    "skip_if_complete": true,
+    "seed": 13,
+    "use_amp": true,
+    "sample_dir": "samples/grid/base_network_cand/ssim/560d3ac3a2",
+    "results_dir": "results/grid/base_network_cand/ssim/560d3ac3a2"
+  },
+  "model": {
+    "name": "base_network_cand",
+    "hidden_ch": [
+      32,
+      32
+    ],
+    "num_layers": 2,
+    "t_in": 5,
+    "t_out": 5
+  },
+  "training": {
+    "epochs": 20,
+    "batch_size": 16,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0,
+    "loss_function": "ssim",
+    "teacher_forcing": 0,
+    "optimizer": "AdamW",
+    "seed": 13
+  },
+  "data": {
+    "raw_root": "data/raw",
+    "cache_root": "data/cache",
+    "cache_only": true,
+    "stations": [
+      "KAMX"
+    ],
+    "train_start_date": "2024-04-01",
+    "train_end_date": "2024-10-31",
+    "test_start_date": "2025-04-01",
+    "test_end_date": "2025-10-31",
+    "val_frac": 0.1,
+    "batch_size": 16,
+    "num_workers": 4,
+    "t_in": 5,
+    "t_out": 5,
+    "interval": 11,
+    "window_stride": 5
+  }
+}
