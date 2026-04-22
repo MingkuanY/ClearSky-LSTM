@@ -2,6 +2,7 @@
 from models.conv_lstm import ConvLSTMForecaster
 from models.conv_lstm_cand import ConvLSTMForecasterCand
 from models.smaat_unet import SmaAtUNet
+from models.clearsky_lstm import ClearSkyLSTM
 
 # Data loader
 from data import NEXRADDataset
@@ -226,7 +227,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch, sc
         optimizer.zero_grad()
 
         with autocast_context(args, device):
-            if args.model in {"base_network", "base_network_cand"}:
+            if args.model in {"base_network", "base_network_cand", "clearsky_lstm"}:
                 pred = model(
                     x,
                     t_out=y.shape[1],
@@ -286,7 +287,7 @@ def evaluate(model, loader, criterion, device, args, epoch=0, stage="Val"):
             y = y.to(device)
 
             with autocast_context(args, device):
-                if args.model in {"base_network", "base_network_cand"}:
+                if args.model in {"base_network", "base_network_cand", "clearsky_lstm"}:
                     pred = model(x, t_out=y.shape[1])
                 else:
                     pred = model(x)
@@ -442,7 +443,7 @@ def main():
         "--model",
         type=str,
         default="base_network",
-        choices=["base_network", "base_network_cand", "smaat_unet"],
+        choices=["base_network", "base_network_cand", "smaat_unet", "clearsky_lstm"],
         help="Model architecture to use",
     )
 
@@ -469,6 +470,10 @@ def main():
     ap.add_argument("--train-end-date", type=parse_cli_date, required=True, help="Inclusive training end date (YYYY-MM-DD)")
     ap.add_argument("--test-start-date", type=parse_cli_date, required=True, help="Inclusive test start date (YYYY-MM-DD)")
     ap.add_argument("--test-end-date", type=parse_cli_date, required=True, help="Inclusive test end date (YYYY-MM-DD)")
+
+    # Data paths (override defaults to point at a scratch disk or custom location)
+    ap.add_argument("--data-root",  type=str, default="data/raw",   help="Root directory of raw NEXRAD files")
+    ap.add_argument("--cache-root", type=str, default="data/cache", help="Root directory of pre-cached .npy files")
 
     # Data loading params
     ap.add_argument("--batch-size", type=int, default=8, help="Training batch size")
@@ -548,25 +553,25 @@ def main():
     # ---------------- 2. Data loading ----------------
     print("Building dataset...")
     train_val_ds = NEXRADDataset(
-        raw_root="data/raw",
+        raw_root=args.data_root,
         stations=args.stations,
         t_in=args.t_in,               # past frames fed to encoder - x: [T_in,  1, 256, 256]
         t_out=args.t_out,             # future frames to predict   - y: [T_out, 1, 256, 256]
         interval=args.interval,
         window_stride=args.window_stride,
-        cache_root="data/cache",
+        cache_root=args.cache_root,
         cache_only=True,
         start_date=args.train_start_date,
         end_date=args.train_end_date,
     )
     test_ds = NEXRADDataset(
-        raw_root="data/raw",
+        raw_root=args.data_root,
         stations=args.stations,
         t_in=args.t_in,
         t_out=args.t_out,
         interval=args.interval,
         window_stride=args.window_stride,
-        cache_root="data/cache",
+        cache_root=args.cache_root,
         cache_only=True,
         start_date=args.test_start_date,
         end_date=args.test_end_date,
@@ -612,6 +617,8 @@ def main():
         model = ConvLSTMForecaster(hidden_ch=args.hidden_ch, num_layers=args.num_layers)
     elif args.model == "base_network_cand":
         model = ConvLSTMForecasterCand(hidden_ch=args.hidden_ch, num_layers=args.num_layers)
+    elif args.model == "clearsky_lstm":
+        model = ClearSkyLSTM(in_ch=1)
     else:
         raise ValueError("Invalid model name")
     

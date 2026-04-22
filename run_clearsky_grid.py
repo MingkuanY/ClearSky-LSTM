@@ -10,7 +10,7 @@ import sys
 
 
 LOSSES = ["l2", "l1", "reflectivity_bmse", "reflectivity_bmae", "ssim"]
-MODELS = ["base_network_cand", "smaat_unet"]
+MODELS = ["base_network_cand", "smaat_unet", "clearsky_lstm"]
 INTERVALS = [1, 5, 11]
 LEARNING_RATES = [0.0001, 0.001]
 
@@ -31,6 +31,8 @@ COMMON_ARGS = {
     "num_workers": 4,
     "weight_decay": 0.0,
     "teacher_forcing": 0,
+    "data_root": "data/raw",
+    "cache_root": "data/cache",
 }
 
 CONVLSTM_ARGS = {
@@ -88,8 +90,10 @@ def build_case(model, loss_function, interval, lr):
     }
     if model == "base_network_cand":
         params.update(CONVLSTM_ARGS)
-    else:
+    elif model != "clearsky_lstm":
         params.update({"hidden_ch": [64, 64, 64], "num_layers": 2})
+    else:
+        params.update({"hidden_ch": [], "num_layers": 0})
     params["run_id"] = deterministic_run_id(params)
     return params
 
@@ -137,6 +141,10 @@ def build_command(params, run_stamp, skip_if_complete, no_tqdm):
         run_stamp,
         "--run-id",
         params["run_id"],
+        "--data-root",
+        params["data_root"],
+        "--cache-root",
+        params["cache_root"],
     ]
     if params["model"] == "base_network_cand":
         cmd.extend(["--hidden-ch", *[str(ch) for ch in params["hidden_ch"]]])
@@ -173,7 +181,14 @@ def main():
     parser.add_argument("--no-tqdm", action="store_true", help="Disable per-batch tqdm output in training jobs.")
     parser.add_argument("--start-at", type=int, default=1, help="1-based case index to start from.")
     parser.add_argument("--limit", type=int, default=None, help="Maximum number of cases to consider.")
+    parser.add_argument("--data-root",  type=str, default=None, help="Override raw data root for all runs.")
+    parser.add_argument("--cache-root", type=str, default=None, help="Override cache root for all runs.")
     args = parser.parse_args()
+
+    if args.data_root is not None:
+        COMMON_ARGS["data_root"] = args.data_root
+    if args.cache_root is not None:
+        COMMON_ARGS["cache_root"] = args.cache_root
 
     cases = list(iter_cases())
     total = len(cases)
