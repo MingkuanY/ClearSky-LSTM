@@ -10,7 +10,7 @@ import sys
 
 
 LOSSES = ["l2", "l1", "reflectivity_bmse", "reflectivity_bmae", "ssim"]
-MODELS = ["base_network_cand", "smaat_unet", "simple_test_net"]
+MODELS = ["simple_test_net"]
 INTERVALS = [1, 5, 11]
 LEARNING_RATES = [0.0001, 0.001]
 
