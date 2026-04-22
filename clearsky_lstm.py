@@ -1,6 +1,7 @@
 # Models
 from models.conv_lstm import ConvLSTMForecaster
 from models.conv_lstm_cand import ConvLSTMForecasterCand
+from models.simple_test_net import SimpleTestNet
 from models.smaat_unet import SmaAtUNet
 
 # Data loader
@@ -144,10 +145,11 @@ def save_run_settings(args, run_id, stamp, subpath):
         },
         "model": {
             "name": args.model,
-            "hidden_ch": args.hidden_ch,
-            "num_layers": args.num_layers,
-            "t_in": args.t_in,
-            "t_out": args.t_out,
+        "hidden_ch": args.hidden_ch,
+        "num_layers": args.num_layers,
+        "base_ch": args.base_ch,
+        "t_in": args.t_in,
+        "t_out": args.t_out,
         },
         "training": {
             "epochs": args.epochs,
@@ -206,6 +208,7 @@ def deterministic_run_id(args):
         "precision": args.precision,
         "hidden_ch": args.hidden_ch,
         "num_layers": args.num_layers,
+        "base_ch": args.base_ch,
         "teacher_forcing": args.teacher_forcing,
         "seed": args.seed,
     }
@@ -226,7 +229,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, args, epoch, sc
         optimizer.zero_grad()
 
         with autocast_context(args, device):
-            if args.model in {"base_network", "base_network_cand"}:
+            if args.model in {"base_network", "base_network_cand", "simple_test_net"}:
                 pred = model(
                     x,
                     t_out=y.shape[1],
@@ -286,7 +289,7 @@ def evaluate(model, loader, criterion, device, args, epoch=0, stage="Val"):
             y = y.to(device)
 
             with autocast_context(args, device):
-                if args.model in {"base_network", "base_network_cand"}:
+                if args.model in {"base_network", "base_network_cand", "simple_test_net"}:
                     pred = model(x, t_out=y.shape[1])
                 else:
                     pred = model(x)
@@ -442,7 +445,7 @@ def main():
         "--model",
         type=str,
         default="base_network",
-        choices=["base_network", "base_network_cand", "smaat_unet"],
+        choices=["base_network", "base_network_cand", "smaat_unet", "simple_test_net"],
         help="Model architecture to use",
     )
 
@@ -501,6 +504,7 @@ def main():
     # ConvLSTM architecture
     ap.add_argument("--hidden-ch", type=int, nargs="+", default=[64,64,64], help="Number of ConvLSTM hidden channels")
     ap.add_argument("--num-layers", type=int, default=2, help="Number of stacked ConvLSTM layers")
+    ap.add_argument("--base-ch", type=int, default=32, help="Base channel width for U-Net-style models")
     ap.add_argument("--teacher-forcing", type=float, default=0, help="Probability of using ground truth frame during training")
 
     # Visualization/outdirs/reproducibility
@@ -607,11 +611,13 @@ def main():
 
     # ------------ 3. Build selected model ------------
     if args.model == "smaat_unet":
-        model = SmaAtUNet(in_channels=args.t_in, out_channels=args.t_out)
+        model = SmaAtUNet(in_channels=args.t_in, out_channels=args.t_out, base=args.base_ch)
     elif args.model == "base_network":
         model = ConvLSTMForecaster(hidden_ch=args.hidden_ch, num_layers=args.num_layers)
     elif args.model == "base_network_cand":
         model = ConvLSTMForecasterCand(hidden_ch=args.hidden_ch, num_layers=args.num_layers)
+    elif args.model == "simple_test_net":
+        model = SimpleTestNet(base=args.base_ch, lstm_layers=args.num_layers)
     else:
         raise ValueError("Invalid model name")
     

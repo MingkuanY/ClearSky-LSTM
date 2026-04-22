@@ -10,7 +10,7 @@ import sys
 
 
 LOSSES = ["l2", "l1", "reflectivity_bmse", "reflectivity_bmae", "ssim"]
-MODELS = ["base_network_cand", "smaat_unet"]
+MODELS = ["base_network_cand", "smaat_unet", "simple_test_net"]
 INTERVALS = [1, 5, 11]
 LEARNING_RATES = [0.0001, 0.001]
 
@@ -31,6 +31,7 @@ COMMON_ARGS = {
     "num_workers": 4,
     "weight_decay": 0.0,
     "teacher_forcing": 0,
+    "base_ch": 32,
 }
 
 CONVLSTM_ARGS = {
@@ -70,6 +71,7 @@ def deterministic_run_id(params):
         "precision": params["precision"],
         "hidden_ch": params["hidden_ch"],
         "num_layers": params["num_layers"],
+        "base_ch": params["base_ch"],
         "teacher_forcing": params["teacher_forcing"],
         "seed": params["seed"],
     }
@@ -88,6 +90,8 @@ def build_case(model, loss_function, interval, lr):
     }
     if model == "base_network_cand":
         params.update(CONVLSTM_ARGS)
+    elif model == "simple_test_net":
+        params.update({"hidden_ch": [params["base_ch"] * 8], "num_layers": 2})
     else:
         params.update({"hidden_ch": [64, 64, 64], "num_layers": 2})
     params["run_id"] = deterministic_run_id(params)
@@ -123,6 +127,8 @@ def build_command(params, run_stamp, skip_if_complete, no_tqdm):
         str(params["window_stride"]),
         "--precision",
         params["precision"],
+        "--base-ch",
+        str(params["base_ch"]),
         "--train-start-date",
         params["train_start_date"],
         "--train-end-date",
@@ -138,7 +144,7 @@ def build_command(params, run_stamp, skip_if_complete, no_tqdm):
         "--run-id",
         params["run_id"],
     ]
-    if params["model"] == "base_network_cand":
+    if params["model"] in {"base_network_cand", "simple_test_net"}:
         cmd.extend(["--hidden-ch", *[str(ch) for ch in params["hidden_ch"]]])
         cmd.extend(["--num-layers", str(params["num_layers"])])
     if skip_if_complete:
