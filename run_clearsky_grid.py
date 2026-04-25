@@ -10,7 +10,7 @@ import sys
 
 
 LOSSES = ["l2", "l1", "reflectivity_bmse", "reflectivity_bmae", "ssim"]
-MODELS = ["base_network_cand", "smaat_unet", "clearsky_lstm"]
+MODELS = ["clearsky_lstm"]
 INTERVALS = [1, 5, 11]
 LEARNING_RATES = [0.0001, 0.001]
 
@@ -90,10 +90,12 @@ def build_case(model, loss_function, interval, lr):
     }
     if model == "base_network_cand":
         params.update(CONVLSTM_ARGS)
-    elif model != "clearsky_lstm":
+    elif model == "smaat_unet":
         params.update({"hidden_ch": [64, 64, 64], "num_layers": 2})
-    else:
+    elif model == "clearsky_lstm":
         params.update({"hidden_ch": [], "num_layers": 0})
+    else:
+        raise ValueError("not supported model")
     params["run_id"] = deterministic_run_id(params)
     return params
 
