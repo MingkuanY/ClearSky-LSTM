@@ -1,0 +1,97 @@
+{
+  "run_id": "488905ba98",
+  "date_stamp": "grid",
+  "created_at": "2026-04-23T06:52:25",
+  "command": "clearsky_lstm.py --loss-function reflectivity_bmse --model-out checkpoints/clearsky_lstm_reflectivity_bmse_int5_lr0p001_tin5_tout5.pt --model clearsky_lstm --stations KAMX --t-in 5 --t-out 5 --batch-size 16 --epochs 20 --lr 0.001 --interval 5 --window-stride 5 --precision amp --train-start-date 2024-04-01 --train-end-date 2024-10-31 --test-start-date 2025-04-01 --test-end-date 2025-10-31 --seed 13 --run-stamp grid --run-id 488905ba98 --data-root data/raw --cache-root data/cache --skip-if-complete",
+  "paths": {
+    "subpath": "grid/clearsky_lstm/reflectivity_bmse/488905ba98",
+    "sample_dir": "samples/grid/clearsky_lstm/reflectivity_bmse/488905ba98",
+    "results_dir": "results/grid/clearsky_lstm/reflectivity_bmse/488905ba98",
+    "model_out": "checkpoints/clearsky_lstm_reflectivity_bmse_int5_lr0p001_tin5_tout5.pt"
+  },
+  "runtime": {
+    "device": "cuda",
+    "precision_requested": "amp",
+    "use_amp": true
+  },
+  "parameters": {
+    "model": "clearsky_lstm",
+    "stations": [
+      "KAMX"
+    ],
+    "t_in": 5,
+    "t_out": 5,
+    "interval": 5,
+    "window_stride": 5,
+    "val_frac": 0.1,
+    "train_start_date": "2024-04-01",
+    "train_end_date": "2024-10-31",
+    "test_start_date": "2025-04-01",
+    "test_end_date": "2025-10-31",
+    "data_root": "data/raw",
+    "cache_root": "data/cache",
+    "batch_size": 16,
+    "num_workers": 4,
+    "epochs": 20,
+    "lr": 0.001,
+    "weight_decay": 0.0,
+    "precision": "amp",
+    "loss_function": "reflectivity_bmse",
+    "no_tqdm": false,
+    "hidden_ch": [
+      64,
+      64,
+      64
+    ],
+    "num_layers": 2,
+    "teacher_forcing": 0,
+    "model_out": "checkpoints/clearsky_lstm_reflectivity_bmse_int5_lr0p001_tin5_tout5.pt",
+    "run_id": "488905ba98",
+    "run_stamp": "grid",
+    "skip_if_complete": true,
+    "seed": 13,
+    "use_amp": true,
+    "sample_dir": "samples/grid/clearsky_lstm/reflectivity_bmse/488905ba98",
+    "results_dir": "results/grid/clearsky_lstm/reflectivity_bmse/488905ba98"
+  },
+  "model": {
+    "name": "clearsky_lstm",
+    "hidden_ch": [
+      64,
+      64,
+      64
+    ],
+    "num_layers": 2,
+    "t_in": 5,
+    "t_out": 5
+  },
+  "training": {
+    "epochs": 20,
+    "batch_size": 16,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0,
+    "loss_function": "reflectivity_bmse",
+    "teacher_forcing": 0,
+    "optimizer": "AdamW",
+    "seed": 13
+  },
+  "data": {
+    "raw_root": "data/raw",
+    "cache_root": "data/cache",
+    "cache_only": true,
+    "stations": [
+      "KAMX"
+    ],
+    "train_start_date": "2024-04-01",
+    "train_end_date": "2024-10-31",
+    "test_start_date": "2025-04-01",
+    "test_end_date": "2025-10-31",
+    "val_frac": 0.1,
+    "batch_size": 16,
+    "num_workers": 4,
+    "t_in": 5,
+    "t_out": 5,
+    "interval": 5,
+    "window_stride": 5
+  }
+}
